@@ -74,6 +74,9 @@ export async function createExtensionTestHarness(options = {}) {
     let widgetOptions = null;
     let selectedTitle = null;
     let selectedOptions = null;
+    let detailComponent;
+    let detailClosed = false;
+    const terminal = { rows: 20 };
 
     const mockCtx = {
       mode: "tui",
@@ -91,6 +94,9 @@ export async function createExtensionTestHarness(options = {}) {
           selectedTitle = title;
           selectedOptions = optsList;
           return undefined; // simulate Esc
+        },
+        custom: async (factory) => {
+          detailComponent = factory({ terminal, requestRender() {} }, createThemeStub(), {}, () => { detailClosed = true; });
         },
       },
       sessionManager: {
@@ -122,6 +128,7 @@ export async function createExtensionTestHarness(options = {}) {
       },
       getWidgetOptions: () => widgetOptions,
       getSelectState: () => ({ selectedTitle, selectedOptions }),
+      getDetails: () => ({ component: detailComponent, closed: detailClosed, terminal }),
     };
   }
 

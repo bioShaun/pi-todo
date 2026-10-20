@@ -1,13 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Type, type Static } from "typebox";
+import { matchesKey } from "@earendil-works/pi-tui";
 import { TodoStateManager, type TodoItem } from "./state.ts";
 import {
-  formatTodoDialogOptions,
   formatTodoDialogTitle,
   formatToolSummary,
   renderWidgetLines,
   sanitizeText,
+  renderTodoDetailLines,
+  truncateText,
 } from "./view.ts";
 
 export const TodoParamsSchema = Type.Object({
@@ -123,6 +125,7 @@ function handleClear(stateManager: TodoStateManager): TodoExecutionResult {
 }
 
 export default function todoExtension(pi: ExtensionAPI): void {
+  let collapsed = false;
   const stateManager = new TodoStateManager((type, data) => {
     pi.appendEntry(type, data);
   });
@@ -140,7 +143,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
       "pi-todo",
       (_tui, theme) => ({
         render(width: number): string[] {
-          return renderWidgetLines(stateManager.getItems(), width, theme) ?? [];
+          return renderWidgetLines(stateManager.getItems(), width, theme, { collapsed }) ?? [];
         },
         invalidate(): void {
           // Rendering reads the current state and width without caching.
@@ -149,6 +152,21 @@ export default function todoExtension(pi: ExtensionAPI): void {
       { placement: "aboveEditor" }
     );
   }
+
+  function toggleTodos(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui" || !ctx.ui) return;
+    if (stateManager.getItems().length === 0) {
+      ctx.ui.notify("暂无待办事项", "info");
+      return;
+    }
+    collapsed = !collapsed;
+    updateWidget(ctx);
+  }
+
+  pi.registerShortcut("alt+t", {
+    description: "展开或折叠待办列表",
+    handler: toggleTodos,
+  });
 
   pi.registerTool({
     name: "todo",
@@ -189,6 +207,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
       }
 
       if (!result.isError) {
+        if (params.action === "set" || params.action === "clear") collapsed = false;
         updateWidget(ctx);
       }
       return result;
@@ -196,17 +215,58 @@ export default function todoExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("todos", {
-    description: "Display the full todo list",
-    handler: async (_args: string, ctx?: ExtensionContext): Promise<void> => {
+    description: "查看待办详情；/todos toggle 展开或折叠列表",
+    handler: async (args: string, ctx?: ExtensionContext): Promise<void> => {
       if (!ctx || ctx.mode !== "tui" || !ctx.ui) {
         return;
       }
+      if (args.trim() === "toggle") {
+        toggleTodos(ctx);
+        return;
+      }
+      if (args.trim()) {
+        ctx.ui.notify("用法：/todos 或 /todos toggle", "info");
+        return;
+      }
       const items = stateManager.getItems();
-      await ctx.ui.select(formatTodoDialogTitle(items), formatTodoDialogOptions(items));
+      await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+        let offset = 0;
+        let pageSize = 1;
+        let totalLines = 0;
+        return {
+          render(width: number): string[] {
+            if (width <= 0) return [];
+            const body = renderTodoDetailLines(items, width, theme);
+            totalLines = body.length;
+            const height = Math.max(1, tui.terminal.rows);
+            pageSize = Math.max(1, height - 4);
+            offset = Math.max(0, Math.min(offset, totalLines - pageSize));
+            const title = truncateText(theme.bold(formatTodoDialogTitle(items)), width);
+            const footer = truncateText(theme.fg("dim",
+              `Esc 关闭 · ↑↓ 滚动 · PgUp/PgDn 翻页 · ${offset + 1}–${Math.min(offset + pageSize, totalLines)}/${totalLines} 行`), width);
+            if (height < 3) return [title, footer].slice(0, height);
+            return [title, ...body.slice(offset, offset + pageSize), footer];
+          },
+          invalidate(): void {},
+          handleInput(data: string): void {
+            if (matchesKey(data, "escape")) { done(); return; }
+            if (matchesKey(data, "up")) offset--;
+            else if (matchesKey(data, "down")) offset++;
+            else if (matchesKey(data, "pageUp")) offset -= pageSize;
+            else if (matchesKey(data, "pageDown")) offset += pageSize;
+            else if (matchesKey(data, "home")) offset = 0;
+            else if (matchesKey(data, "end")) offset = totalLines;
+            else return;
+            offset = Math.max(0, Math.min(offset, totalLines - pageSize));
+            tui.requestRender();
+          },
+        };
+      });
     },
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    collapsed = false;
     const branch = ctx.sessionManager?.getBranch() || [];
     stateManager.restoreFromBranch(branch, (msg) => {
       ctx.ui?.notify?.(sanitizeText(msg), "warning");
@@ -215,6 +275,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_tree", async (_event, ctx) => {
+    collapsed = false;
     const branch = ctx.sessionManager?.getBranch() || [];
     stateManager.restoreFromBranch(branch, (msg) => {
       ctx.ui?.notify?.(sanitizeText(msg), "warning");

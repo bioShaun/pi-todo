@@ -7,6 +7,7 @@ const hostRoot = getHostRoot();
 const host = path.join(hostRoot, "@earendil-works/pi-coding-agent");
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
   await import(path.join(host, "dist/index.js"));
+const { KeybindingsManager } = await import(path.join(host, "dist/core/keybindings.js"));
 const cwd = process.cwd();
 const work = fs.mkdtempSync(path.join(cwd, ".work/host-smoke-"));
 const agentDir = path.join(work, "agent");
@@ -52,6 +53,9 @@ try {
   const manager = SessionManager.create(cwd, path.join(work, "sessions"));
   manager.appendMessage({ role: "user", content: "Offline todo host smoke test", timestamp: Date.now() });
   session = await openSession(manager);
+  const shortcuts = session.extensionRunner.getShortcuts(KeybindingsManager.create(agentDir).getResolvedBindings());
+  assert.ok(shortcuts.has("alt+t"), "Alt+T survives host shortcut conflict resolution");
+  assert.deepEqual(session.extensionRunner.getShortcutDiagnostics(), []);
   assert.ok(session.getActiveToolNames().includes("todo"));
   const baseline = session.getActiveToolNames();
   const set = await call(session, {

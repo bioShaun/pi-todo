@@ -247,69 +247,58 @@ test("branch restoration: session_start restores branch, empty branch clears sta
   assert.equal(mockCtx3.getWidgetContent(), undefined, "corrupt branch safely clears state/widget");
 });
 
-test("UI rendering: widget shows the plan in id order including completed, collapses when all done, hides when empty", async () => {
-  const harness = await createExtensionTestHarness();
-  const { tool, createMockContext } = harness;
-  const mock = createMockContext();
+test("UI rendering: all tasks stay expanded in id order, including completed and long plans", async () => {
+  const h = await createExtensionTestHarness();
+  const mock = h.createMockContext();
+  const run = params => h.tool.definition.execute("ui", params, undefined, undefined, mock.ctx);
+  await run({ action: "clear" });
+  assert.equal(mock.getWidgetContent(), undefined);
+  await run({action: "set", items: Array.from({length: 12}, (_, i) => ({text: `Task ${i+1}`, status: "completed"}))});
+  let lines = mock.getWidgetContent(120);
+  assert.match(lines[0], /12\/12 全部完成/);
+  assert.equal(lines.filter(l => /✓/.test(l)).length, 12);
+  assert.match(lines[1], /#1  Task 1/);
+  assert.match(lines[12], /#12 Task 12/);
+  await run({action: "update", updates: [{id: 5, status: "blocked", reason: "等待接口"}]});
+  lines = mock.getWidgetContent(120);
+  assert.match(lines[0], /11\/12 完成 · 1 项受阻/);
+  assert.match(lines[5], /✖ #5  Task 5/);
+  assert.match(lines[6], /└ 等待接口/);
+  assert.match(lines[13], /✓ #12 Task 12/);
+});
 
-  // 1. Empty hidden
-  await tool.definition.execute("call-1", { action: "clear" }, undefined, undefined, mock.ctx);
-  assert.equal(mock.getWidgetContent(), undefined, "empty state hides widget");
-
-  // 2. All completed collapses to 1 line
-  await tool.definition.execute("call-2", {
-    action: "set",
-    items: [
-      { text: "Done 1", status: "completed" },
-      { text: "Done 2", status: "completed" },
-    ],
-  }, undefined, undefined, mock.ctx);
-
-  const completedLines = mock.getWidgetContent();
-  assert.ok(Array.isArray(completedLines), "widget lines array");
-  assert.equal(completedLines.length, 1, "all completed collapses to 1 summary line");
-  assert.match(completedLines[0], /✓/);
-  assert.match(completedLines[0], /2\/2/);
-  assert.match(completedLines[0], /全部完成/);
-
-  // 3. Mixed plan: header + one row per task, in id order, completed included
-  await tool.definition.execute("call-3", {
-    action: "set",
-    items: [
-      { text: "Done 1", status: "completed" },
-      { text: "Pending 1", status: "pending" },
-      { text: "Blocked 1", status: "blocked", reason: "waiting" },
-      { text: "In Progress 1", status: "in_progress" },
-    ],
-  }, undefined, undefined, mock.ctx);
-
-  const mixedLines = mock.getWidgetContent();
-  assert.equal(mixedLines.length, 5, "1 header + 4 task rows");
-  assert.equal(mixedLines[0].trim(), "待办 1/4", "header is counts only, no bar or percentage");
-  assert.match(mixedLines[1], /✓ #1 Done 1/, "completed task is displayed");
-  assert.match(mixedLines[2], /○ #2 Pending 1/);
-  assert.match(mixedLines[3], /✖ #3 Blocked 1/);
-  assert.match(mixedLines[3], /waiting/, "blocked reason shown");
-  assert.match(mixedLines[4], /◐ #4 In Progress 1/);
-
-  // 4. Long plan: rows are capped and the header reports the hidden count,
-  //    keeping the most actionable tasks (blocked/in_progress) visible.
-  await tool.definition.execute("call-4", {
-    action: "set",
-    items: Array.from({ length: 9 }, (_, i) => ({
-      text: `Task ${i + 1}`,
-      status: i === 0 ? "blocked" : i === 1 ? "in_progress" : "pending",
-      ...(i === 0 ? { reason: "waiting" } : {}),
-    })),
-  }, undefined, undefined, mock.ctx);
-
-  const cappedLines = mock.getWidgetContent();
-  assert.equal(cappedLines.length, 7, "1 header + 6 task rows");
-  assert.match(cappedLines[0], /待办 0\/9/);
-  assert.match(cappedLines[0], /还有 3 项/, "header reports hidden rows");
-  assert.match(cappedLines[1], /✖ #1 Task 1/, "blocked task kept");
-  assert.match(cappedLines[2], /◐ #2 Task 2/, "in-progress task kept");
-  assert.match(cappedLines[3], /○ #3 Task 3/);
+test("Alt+T and /todos toggle only collapse presentation; updates preserve it and new plans reset it", async () => {
+  const h = await createExtensionTestHarness();
+  const mock = h.createMockContext();
+  const shortcut = h.ext.shortcuts.get("alt+t");
+  assert.ok(shortcut, "Alt+T fold shortcut must be registered");
+  const run = params => h.tool.definition.execute("ui", params, undefined, undefined, mock.ctx);
+  await shortcut.handler(mock.ctx);
+  assert.match(mock.notifications.at(-1).msg, /暂无/);
+  await run({action:"set",items:[{text:"A",status:"in_progress"},{text:"B",status:"pending"}]});
+  const persisted = h.customEntries.length;
+  await shortcut.handler(mock.ctx);
+  assert.equal(mock.getWidgetContent().length, 1);
+  assert.match(mock.getWidgetContent()[0], /▸.*0\/2.*展开/);
+  assert.equal(h.customEntries.length, persisted);
+  await run({action:"update",updates:[{id:1,status:"completed"},{id:2,status:"blocked",reason:"waiting"}]});
+  assert.equal(mock.getWidgetContent().length, 1);
+  assert.match(mock.getWidgetContent()[0], /1\/2 完成 · 1 项受阻/);
+  await run({action:"list"});
+  assert.equal(mock.getWidgetContent().length, 1);
+  await run({action:"set",items:[{text:"",status:"pending"}]});
+  assert.equal(mock.getWidgetContent().length, 1, "failed set must preserve collapse");
+  await h.todosCmd.handler("toggle",mock.ctx);
+  assert.ok(mock.getWidgetContent().length > 1);
+  await shortcut.handler(mock.ctx);
+  await run({action:"set",items:[{text:"New plan",status:"completed"}]});
+  assert.ok(mock.getWidgetContent().length > 1, "new completed plan is expanded");
+  await shortcut.handler(mock.ctx);
+  await h.ext.handlers.get("session_tree")[0]({},mock.ctx);
+  assert.ok(mock.getWidgetContent().length > 1, "branch restore starts expanded");
+  await shortcut.handler(mock.ctx);
+  await h.ext.handlers.get("session_start")[0]({},mock.ctx);
+  assert.ok(mock.getWidgetContent().length > 1, "new session starts expanded");
 });
 
 test("sanitization: control characters and newlines stripped, width truncated safely", async () => {
@@ -330,28 +319,34 @@ test("sanitization: control characters and newlines stripped, width truncated sa
   assert.doesNotMatch(detail, /[\n\r\x1b]/, "no raw control characters or ANSI leaks in sanitized line");
 });
 
-test("/todos command opens modal select with progress title, glyphs, ids and blocked reasons", async () => {
-  const harness = await createExtensionTestHarness();
-  const { tool, todosCmd, createMockContext } = harness;
-  const mock = createMockContext();
-
-  await tool.definition.execute("call-1", {
-    action: "set",
-    items: [
-      { text: "Task 1", status: "blocked", reason: "Need API key" },
-      { text: "Task 2", status: "in_progress" },
-    ],
-  }, undefined, undefined, mock.ctx);
-
-  await todosCmd.handler("", mock.ctx);
-  const { selectedTitle, selectedOptions } = mock.getSelectState();
-  assert.ok(selectedTitle, "select title presented");
-  assert.match(selectedTitle, /0\/2/, "title shows progress counts");
-  assert.match(selectedTitle, /ESC/, "title keeps the escape hint");
-  assert.ok(selectedOptions.length >= 2, "options list presented");
-  assert.match(selectedOptions[0], /✖ #1 Task 1/);
-  assert.match(selectedOptions[0], /Need API key/);
-  assert.match(selectedOptions[1], /◐ #2 Task 2/);
+test("/todos details wrap full text, scroll and close without changing the plan", async () => {
+  const h = await createExtensionTestHarness();
+  const mock = h.createMockContext();
+  await h.tool.definition.execute("details", {action:"set",items:[
+    {text:"长任务标题需要完整查看".repeat(5),status:"blocked",reason:"等待上游接口恢复".repeat(8)},
+    ...Array.from({length:10},(_,i)=>({text:`完成步骤 ${i+1}`,status:"completed"}))
+  ]},undefined,undefined,mock.ctx);
+  await h.todosCmd.handler("",mock.ctx);
+  const detail = mock.getDetails();
+  assert.ok(detail.component, "details use a custom wrapping view");
+  let lines = detail.component.render(40);
+  assert.ok(lines.length <= 20);
+  assert.match(lines[0], /10\/11/);
+  assert.match(lines.at(-1), /Esc/);
+  assert.doesNotMatch(lines.slice(1, -1).join(""), /\.\.\./, "body wraps rather than truncating at a normal width");
+  const top = lines.join("\n");
+  detail.component.handleInput("\x1b[6~");
+  lines = detail.component.render(40);
+  assert.notEqual(lines.join("\n"), top, "page down reveals remaining text");
+  detail.component.handleInput("\x1b[F");
+  assert.match(detail.component.render(40).join("\n"), /完成步骤 10/);
+  detail.terminal.rows=8;
+  assert.ok(detail.component.render(25).length <= 8, "resize clamps viewport");
+  detail.component.handleInput("\x1b[H");
+  assert.match(detail.component.render(40).join("\n"), /长任务标题/);
+  detail.component.handleInput("\x1b");
+  assert.equal(mock.getDetails().closed,true);
+  assert.equal(h.customEntries.length,1, "reading details never changes state");
 });
 
 test("context handler: appends latest ephemeral custom message with unfinished tasks, filters old ones", async () => {
@@ -575,7 +570,7 @@ test("UI rendering: themed widget uses semantic colors and keeps the header text
   assert.ok(comp, "factory returns component for a themed host");
 
   const lines = comp.render(60);
-  assert.equal(lines.length, 5, "header + 4 task rows (completed included)");
+  assert.equal(lines.length, 7, "header + tasks + reason + details hint");
   for (const line of lines) {
     assert.ok(tui.visibleWidth(line) <= 60, `line width exceeds 60 cols: ${JSON.stringify(line)}`);
   }
@@ -587,11 +582,12 @@ test("UI rendering: themed widget uses semantic colors and keeps the header text
   assert.ok(theme.tokens.includes("dim") || theme.tokens.includes("muted"), "secondary tokens used");
 
   const plain = lines.map((line) => tui.stripTerminalSequences(line));
-  assert.equal(plain[0].trim(), "待办 1/4", "header is counts only, without a bar or percentage");
-  assert.match(plain[1], /✖ #1 阻塞任务 · 等待上游/);
-  assert.match(plain[2], /◐ #2 进行中任务/);
-  assert.match(plain[3], /○ #3 待办任务/);
-  assert.match(plain[4], /✓ #4 已完成任务/);
+  assert.match(plain[0], /待办 1\/4 完成 · 1 项受阻/);
+  assert.match(plain[1], /✖ #1 阻塞任务/);
+  assert.match(plain[2], /└ 等待上游/);
+  assert.match(plain[3], /◐ #2 进行中任务/);
+  assert.match(plain[4], /○ #3 待办任务/);
+  assert.match(plain[5], /✓ #4 已完成任务/);
 
   // Narrow terminals stay within bounds without leaking escapes.
   const narrow = comp.render(12);

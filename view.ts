@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { TodoItem, TodoStatus } from "./state.ts";
 
 export { visibleWidth };
@@ -40,15 +40,6 @@ const STATUS_TOKENS: Record<TodoStatus, TodoThemeToken> = {
   completed: "success",
   blocked: "warning",
 };
-
-const PRIORITY_ORDER: Record<TodoStatus, number> = {
-  blocked: 1,
-  in_progress: 2,
-  pending: 3,
-  completed: 4,
-};
-
-const MAX_WIDGET_ROWS = 6;
 
 export function sanitizeText(text: string): string {
   if (!text) {
@@ -102,94 +93,69 @@ function statusToken(status: TodoStatus): TodoThemeToken {
   return STATUS_TOKENS[status] ?? "muted";
 }
 
-function renderHeaderLine(
-  completed: number,
-  total: number,
-  hidden: number,
-  maxWidth: number,
-  theme?: TodoTheme
-): string {
-  const hintText = hidden > 0 ? ` · 还有 ${hidden} 项` : "";
-  const line =
-    ` ${paint(theme, "muted", "待办")} ${paint(theme, "accent", `${completed}/${total}`)}` +
-    paint(theme, "dim", hintText);
-  return truncateText(line, maxWidth);
+/** Pure presentation state: never persisted in the task snapshot. */
+export interface TodoViewOptions {
+  collapsed?: boolean;
 }
 
-function renderTaskLine(item: TodoItem, maxWidth: number, theme?: TodoTheme): string {
-  const text = sanitizeText(item.text);
-  let styledText = text;
-  if (item.status === "in_progress") {
-    styledText = paintBold(theme, text);
-  } else if (item.status === "completed") {
-    styledText = paint(theme, "dim", text);
-  }
+function rail(theme?: TodoTheme): string {
+  return paint(theme, "dim", "│") + " ";
+}
 
-  let line =
-    ` ${paint(theme, statusToken(item.status), statusGlyph(item.status))} ` +
-    `${paint(theme, "dim", `#${item.id}`)} ${styledText}`;
+function renderHeaderLine(items: TodoItem[], maxWidth: number, theme: TodoTheme | undefined, collapsed: boolean): string {
+  const completed = items.filter(item => item.status === "completed").length;
+  const blocked = items.filter(item => item.status === "blocked").length;
+  const summary = `${completed}/${items.length} ${completed === items.length ? "全部完成" : "完成"}`;
+  const line = rail(theme) + paint(theme, "muted", `${collapsed ? "▸" : "▾"} 待办 `)
+    + paintBold(theme, paint(theme, completed === items.length ? "success" : "accent", summary))
+    + (blocked ? paint(theme, "warning", ` · ${blocked} 项受阻`) : "");
+  const hint = ` · Alt+T ${collapsed ? "展开" : "折叠"}`;
+  // Preserve counts and warnings before the optional keyboard hint.
+  return truncateText(line + (visibleWidth(line + hint) <= maxWidth ? paint(theme, "dim", hint) : ""), maxWidth);
+}
 
+function renderTaskLines(item: TodoItem, idWidth: number, maxWidth: number, theme?: TodoTheme, wrap = false): string[] {
+  const prefix = rail(theme) + paint(theme, statusToken(item.status), statusGlyph(item.status)) + " "
+    + paint(theme, "dim", `#${item.id}`.padEnd(idWidth)) + " ";
+  const indent = rail(theme) + " ".repeat(idWidth + 3);
+  const style = (text: string): string => item.status === "in_progress"
+    ? paintBold(theme, paint(theme, "accent", text))
+    : item.status === "completed" ? paint(theme, "muted", text) : text;
+  const title = sanitizeText(item.text);
+  const chunks = wrap ? wrapTextWithAnsi(title, Math.max(1, maxWidth - visibleWidth(prefix))) : [title];
+  const lines = chunks.map((chunk, i) => truncateText((i ? indent : prefix) + style(chunk), maxWidth));
   if (item.status === "blocked" && item.reason) {
-    line += `${paint(theme, "dim", " · ")}${paint(theme, "warning", sanitizeText(item.reason))}`;
+    const reason = sanitizeText(item.reason);
+    const reasonPrefix = indent + paint(theme, "warning", "└ ");
+    const chunks = wrap ? wrapTextWithAnsi(reason, Math.max(1, maxWidth - visibleWidth(reasonPrefix))) : [reason];
+    chunks.forEach((chunk, i) => lines.push(truncateText(
+      (i ? indent + "  " : reasonPrefix) + paint(theme, "warning", chunk), maxWidth)));
   }
-
-  return truncateText(line, maxWidth);
-}
-
-/**
- * Pick the rows to display in plan order (by id). When the plan is longer than
- * the row budget, keep the most actionable tasks (blocked, in progress, then
- * earliest pending) and drop the rest.
- */
-function selectVisibleItems(items: TodoItem[], cap: number): TodoItem[] {
-  if (items.length <= cap) {
-    return [...items];
-  }
-  const byPriority = [...items].sort((a, b) => {
-    const pa = PRIORITY_ORDER[a.status] || 99;
-    const pb = PRIORITY_ORDER[b.status] || 99;
-    if (pa !== pb) {
-      return pa - pb;
-    }
-    return a.id - b.id;
-  });
-  const keep = new Set(byPriority.slice(0, cap).map((i) => i.id));
-  return items.filter((i) => keep.has(i.id));
+  return lines;
 }
 
 export function renderWidgetLines(
   items: TodoItem[],
   maxWidth: number = 80,
-  theme?: TodoTheme
+  theme?: TodoTheme,
+  options: TodoViewOptions = {}
 ): string[] | undefined {
-  if (items.length === 0) {
-    return undefined;
-  }
-  if (maxWidth <= 0) {
-    return [];
-  }
-
-  const total = items.length;
-  const completedCount = items.filter((i) => i.status === "completed").length;
-
-  if (completedCount === total) {
-    const line =
-      ` ${paint(theme, "success", statusGlyph("completed"))} ` +
-      `${paintBold(theme, paint(theme, "accent", `${completedCount}/${total}`))} ` +
-      `${paint(theme, "muted", "全部完成")}`;
-    return [truncateText(line, maxWidth)];
-  }
-
-  const visibleItems = selectVisibleItems(items, MAX_WIDGET_ROWS);
-  const hiddenCount = total - visibleItems.length;
-
-  const lines: string[] = [
-    renderHeaderLine(completedCount, total, hiddenCount, maxWidth, theme),
-  ];
-  for (const item of visibleItems) {
-    lines.push(renderTaskLine(item, maxWidth, theme));
-  }
+  if (items.length === 0) return undefined;
+  if (maxWidth <= 0) return [];
+  const lines = [renderHeaderLine(items, maxWidth, theme, options.collapsed === true)];
+  if (options.collapsed) return lines;
+  const idWidth = Math.max(...items.map(item => String(item.id).length)) + 1;
+  for (const item of items) lines.push(...renderTaskLines(item, idWidth, maxWidth, theme));
+  lines.push(truncateText(rail(theme) + paint(theme, "dim", "/todos 查看详情"), maxWidth));
   return lines;
+}
+
+/** Full, wrapped text for the read-only scrollable details view. */
+export function renderTodoDetailLines(items: TodoItem[], maxWidth: number, theme?: TodoTheme): string[] {
+  if (maxWidth <= 0) return [];
+  if (!items.length) return [truncateText("暂无待办事项", maxWidth)];
+  const idWidth = Math.max(...items.map(item => String(item.id).length)) + 1;
+  return items.flatMap(item => renderTaskLines(item, idWidth, maxWidth, theme, true));
 }
 
 /** Read-only dialog title for the /todos command. */
