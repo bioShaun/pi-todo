@@ -62,28 +62,35 @@
 
 ## 安装与配置
 
-通过 Pi 安装到个人配置，然后在当前会话执行 `/reload`（或重新启动 Pi）：
+从 GitHub 安装到个人配置，然后在当前会话执行 `/reload`（或重新启动 Pi）：
 
 ```bash
-pi install /public/scripts/pi-todo
+pi install git@github.com:bioShaun/pi-todo.git
 ```
 
-安装器可能把本地目录记为相对于 `~/.pi/agent/settings.json` 的路径，这是正常行为。也可以在配置中使用：
+也可以通过 HTTPS 安装：
+
+```bash
+pi install https://github.com/bioShaun/pi-todo.git
+```
+
+安装器会把该来源记录到 `~/.pi/agent/settings.json`，这是正常行为。也可以在配置中直接使用：
 
 ```json
 {
   "packages": [
     {
-      "source": "/public/scripts/pi-todo"
+      "source": "git@github.com:bioShaun/pi-todo.git"
     }
   ]
 }
 ```
 
-或者通过命令行单次加载：
+或者克隆本仓库后通过命令行单次加载：
 
 ```bash
-pi --extension /public/scripts/pi-todo/index.ts
+git clone git@github.com:bioShaun/pi-todo.git
+pi --extension ./pi-todo/index.ts
 ```
 
 ## 测试
