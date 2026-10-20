@@ -8,7 +8,10 @@
 ### 1. Source Structure
 - `index.ts`: Entrypoint registering the `todo` tool (with `outputSchema` and `structuredContent`), `/todos` slash command, dynamic widget factory (`render(width)`), and lifecycle listeners (`session_start`, `session_tree`, `context`).
 - `state.ts`: Core data model (`TodoItem`, `TodoStateSnapshot`), validation functions, immutable cloning, atomic mutations, and session branch restoration logic.
-- `view.ts`: Status label mapping, terminal string sanitization (C0/C1 controls, OSC/DCS/APC sequences, bidi controls, collapsed newlines), actual-width truncation (`truncateToWidth`, `visibleWidth` from `@earendil-works/pi-tui`), and widget/dialog rendering. Widget components implement `render(width)` and `invalidate()`.
+- `view.ts`: Status label mapping, terminal string sanitization (C0/C1 controls, OSC/DCS/APC sequences, bidi controls, collapsed newlines), actual-width truncation (`truncateToWidth`, `visibleWidth` from `@earendil-works/pi-tui`), and theme-aware widget/dialog rendering. Widget components implement `render(width)` and `invalidate()`.
+  - `renderWidgetLines(items, width, theme?)` renders one progress header line (`待办 c/t` + actual-width bar + `还有 N 项`) plus at most 3 prioritized unfinished rows using status glyphs (`✖`/`◐`/`○`/`✓`); `theme` is optional so headless callers get plain text. The bar is omitted when the header leaves fewer than 5 columns, and all lines are truncated to the given width.
+  - `formatTodoDialogTitle(items)` / `formatTodoDialogOptions(items)` produce the `/todos` select title (with progress counts) and option rows.
+  - `STATUS_LABELS` stays model-facing (`formatTodoList`, tool text); the widget and dialog use `STATUS_GLYPHS`.
 - `scripts/host-smoke.mjs`: Offline actual-host SDK validation of loading, wrapped tools, JSONL persistence, fresh-session restore, tree navigation and context. Run `node scripts/host-smoke.mjs`; no model requests are made, evidence stays under `.work/`.
 
 ### 2. Tool Interface (`todo`)
@@ -53,8 +56,9 @@ All results return `structuredContent` matching `{ items: TodoItem[], error?: st
   ```
 
 ### 3. TUI Widget & Actual-Width Rendering
-- Widget is registered via a factory function returning `{ render(width: number): string[] }`.
-- Available terminal width is dynamically passed to `renderWidgetLines(items, width)`.
+- Widget is registered via a factory function returning `{ render(width: number): string[] }`; the host passes `(tui, theme)` to the factory, and the theme is forwarded to `renderWidgetLines(items, width, theme)` so semantic tokens (`accent`, `success`, `warning`, `muted`, `dim`, `borderMuted`) follow the active theme. `theme` stays optional for headless rendering.
+- Available terminal width is dynamically passed to `renderWidgetLines(items, width, theme)`.
+- Layout: one header line (`待办 c/t`, actual-width progress bar, `还有 N 项` when unfinished rows are hidden) plus at most 3 prioritized unfinished rows (`✖` blocked, `◐` in progress, `○` pending). All-completed collapses to one `✓ c/t 全部完成` line; an empty list hides the widget.
 - Line widths are truncated according to terminal column width using `@earendil-works/pi-tui` `truncateToWidth` and measured with `visibleWidth` (supporting CJK and emoji).
 - All strings rendered to the UI (tasks, reasons, statuses, notifications) are sanitized to remove C0/C1 control codes, OSC/DCS sequences, and bidi control characters.
 

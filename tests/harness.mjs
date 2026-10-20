@@ -17,6 +17,25 @@ export function getHostRoot() {
   throw new Error("Cannot find PI host root");
 }
 
+/**
+ * Minimal stand-in for the host Theme: emits SGR sequences and records the
+ * tokens requested, so tests can assert both styling and layout.
+ */
+export function createThemeStub() {
+  const tokens = [];
+  const codes = { accent: 36, success: 32, warning: 33, muted: 90, dim: 2, borderMuted: 2 };
+  return {
+    tokens,
+    fg(token, text) {
+      tokens.push(token);
+      return `\x1b[${codes[token] ?? 39}m${text}\x1b[39m`;
+    },
+    bold(text) {
+      return `\x1b[1m${text}\x1b[22m`;
+    },
+  };
+}
+
 export async function createExtensionTestHarness(options = {}) {
   const hostRoot = getHostRoot();
   const loaderPath = path.join(
@@ -83,10 +102,10 @@ export async function createExtensionTestHarness(options = {}) {
     return {
       ctx: mockCtx,
       notifications,
-      getWidgetContent: (width = 80) => {
+      getWidgetContent: (width = 80, theme = undefined) => {
         if (!widgetContent) return undefined;
         if (typeof widgetContent === "function") {
-          const comp = widgetContent();
+          const comp = widgetContent(undefined, theme);
           if (comp && typeof comp.render === "function") {
             const lines = comp.render(width);
             return lines && lines.length > 0 ? lines : undefined;
@@ -95,9 +114,9 @@ export async function createExtensionTestHarness(options = {}) {
         return widgetContent;
       },
       getWidgetRaw: () => widgetContent,
-      getWidgetComponent: () => {
+      getWidgetComponent: (theme = undefined) => {
         if (typeof widgetContent === "function") {
-          return widgetContent();
+          return widgetContent(undefined, theme);
         }
         return null;
       },

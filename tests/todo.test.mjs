@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createExtensionTestHarness } from "./harness.mjs";
+import { createExtensionTestHarness, createThemeStub } from "./harness.mjs";
 
 test("registration: registers todo tool and /todos slash command without interfering with tools", async () => {
   const harness = await createExtensionTestHarness();
@@ -268,7 +268,9 @@ test("UI rendering: widget summary + at most 3 rows, all completed collapses, em
   const completedLines = mock.getWidgetContent();
   assert.ok(Array.isArray(completedLines), "widget lines array");
   assert.equal(completedLines.length, 1, "all completed collapses to 1 summary line");
+  assert.match(completedLines[0], /✓/);
   assert.match(completedLines[0], /2\/2/);
+  assert.match(completedLines[0], /全部完成/);
 
   // 3. Multiple tasks: 1 summary line + at most 3 rows, priority blocked/in_progress/pending
   await tool.definition.execute("call-3", {
@@ -284,12 +286,15 @@ test("UI rendering: widget summary + at most 3 rows, all completed collapses, em
 
   const mixedLines = mock.getWidgetContent();
   assert.equal(mixedLines.length, 4, "1 summary + 3 detail rows");
-  // Row 1 should be Blocked 1
-  assert.match(mixedLines[1], /Blocked 1|已阻塞/);
+  assert.match(mixedLines[0], /待办 0\/5/, "summary shows completed/total counts");
+  assert.match(mixedLines[0], /还有 2 项/, "summary reports hidden unfinished tasks");
+  // Row 1 should be Blocked 1 (with reason and glyph)
+  assert.match(mixedLines[1], /✖ #3 Blocked 1/);
+  assert.match(mixedLines[1], /waiting/);
   // Row 2 should be In Progress 1
-  assert.match(mixedLines[2], /In Progress 1|进行中/);
+  assert.match(mixedLines[2], /◐ #4 In Progress 1/);
   // Row 3 should be Pending 1
-  assert.match(mixedLines[3], /Pending 1|待办/);
+  assert.match(mixedLines[3], /○ #1 Pending 1/);
 });
 
 test("sanitization: control characters and newlines stripped, width truncated safely", async () => {
@@ -310,7 +315,7 @@ test("sanitization: control characters and newlines stripped, width truncated sa
   assert.doesNotMatch(detail, /[\n\r\x1b]/, "no raw control characters or ANSI leaks in sanitized line");
 });
 
-test("/todos command opens modal select with ids, Chinese status labels and reasons", async () => {
+test("/todos command opens modal select with progress title, glyphs, ids and blocked reasons", async () => {
   const harness = await createExtensionTestHarness();
   const { tool, todosCmd, createMockContext } = harness;
   const mock = createMockContext();
@@ -326,10 +331,12 @@ test("/todos command opens modal select with ids, Chinese status labels and reas
   await todosCmd.handler("", mock.ctx);
   const { selectedTitle, selectedOptions } = mock.getSelectState();
   assert.ok(selectedTitle, "select title presented");
+  assert.match(selectedTitle, /0\/2/, "title shows progress counts");
+  assert.match(selectedTitle, /ESC/, "title keeps the escape hint");
   assert.ok(selectedOptions.length >= 2, "options list presented");
-  assert.match(selectedOptions[0], /已阻塞/);
+  assert.match(selectedOptions[0], /✖ #1 Task 1/);
   assert.match(selectedOptions[0], /Need API key/);
-  assert.match(selectedOptions[1], /进行中/);
+  assert.match(selectedOptions[1], /◐ #2 Task 2/);
 });
 
 test("context handler: appends latest ephemeral custom message with unfinished tasks, filters old ones", async () => {
@@ -528,6 +535,57 @@ test("regression: widget factory component render(width) handles CJK/emoji at 12
     assert.doesNotMatch(line, /[\r\n\t]/);
     assert.doesNotMatch(line, /BadOSC/);
   }
+});
+
+test("UI rendering: themed widget uses semantic colors and progress bar, and drops the bar when narrow", async () => {
+  const { getHostRoot } = await import("./harness.mjs");
+  const tui = await import(getHostRoot() + "/@earendil-works/pi-tui/dist/index.js");
+
+  const harness = await createExtensionTestHarness();
+  const { tool, createMockContext } = harness;
+  const mock = createMockContext();
+
+  await tool.definition.execute("call-1", {
+    action: "set",
+    items: [
+      { text: "阻塞任务", status: "blocked", reason: "等待上游" },
+      { text: "进行中任务", status: "in_progress" },
+      { text: "待办任务", status: "pending" },
+      { text: "已完成任务", status: "completed" },
+    ],
+  }, undefined, undefined, mock.ctx);
+
+  const theme = createThemeStub();
+  const comp = mock.getWidgetComponent(theme);
+  assert.ok(comp, "factory returns component for a themed host");
+
+  const lines = comp.render(60);
+  assert.equal(lines.length, 4, "header + 3 unfinished rows");
+  for (const line of lines) {
+    assert.ok(tui.visibleWidth(line) <= 60, `line width exceeds 60 cols: ${JSON.stringify(line)}`);
+  }
+
+  assert.match(lines[0], /\x1b\[/, "header carries ANSI styling");
+  assert.match(lines[0], /█/, "progress bar rendered when width allows");
+  assert.ok(theme.tokens.includes("accent"), "accent token used for counts");
+  assert.ok(theme.tokens.includes("success"), "success token used for the filled bar");
+  assert.ok(theme.tokens.includes("warning"), "warning token used for the blocked task");
+  assert.ok(theme.tokens.includes("dim") || theme.tokens.includes("muted"), "secondary tokens used");
+
+  const plain = lines.map((line) => tui.stripTerminalSequences(line));
+  assert.match(plain[0], /待办 1\/4/);
+  assert.match(plain[1], /✖ #1 阻塞任务 · 等待上游/);
+  assert.match(plain[2], /◐ #2 进行中任务/);
+  assert.match(plain[3], /○ #3 待办任务/);
+
+  // Narrow terminals drop the bar and stay within bounds without leaking escapes.
+  const narrow = comp.render(12);
+  assert.ok(narrow.length > 0);
+  for (const line of narrow) {
+    assert.ok(tui.visibleWidth(line) <= 12, `narrow line exceeds 12 cols: ${JSON.stringify(line)}`);
+    assert.doesNotMatch(tui.stripTerminalSequences(line), /[\x00-\x1f\x7f-\x9f]/);
+  }
+  assert.doesNotMatch(narrow[0], /█/, "progress bar dropped at narrow widths");
 });
 
 test("regression: simulated session_start reasons and invalid latest snapshot does not fall back", async () => {

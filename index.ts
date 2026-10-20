@@ -2,7 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Type, type Static } from "typebox";
 import { TodoStateManager, type TodoItem } from "./state.ts";
-import { formatTodoList, formatToolSummary, renderWidgetLines, sanitizeText } from "./view.ts";
+import {
+  formatTodoDialogOptions,
+  formatTodoDialogTitle,
+  formatToolSummary,
+  renderWidgetLines,
+  sanitizeText,
+} from "./view.ts";
 
 export const TodoParamsSchema = Type.Object({
   action: Type.Union([
@@ -132,9 +138,9 @@ export default function todoExtension(pi: ExtensionAPI): void {
     }
     ctx.ui.setWidget(
       "pi-todo",
-      () => ({
+      (_tui, theme) => ({
         render(width: number): string[] {
-          return renderWidgetLines(stateManager.getItems(), width) ?? [];
+          return renderWidgetLines(stateManager.getItems(), width, theme) ?? [];
         },
         invalidate(): void {
           // Rendering reads the current state and width without caching.
@@ -196,8 +202,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
         return;
       }
       const items = stateManager.getItems();
-      const options = formatTodoList(items);
-      await ctx.ui.select("待办事项清单 (按 ESC 退出)", options);
+      await ctx.ui.select(formatTodoDialogTitle(items), formatTodoDialogOptions(items));
     },
   });
 
