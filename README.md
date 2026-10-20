@@ -1,39 +1,40 @@
 # pi-todo
 
-轻量级独立 Pi 1.3.0 待办事项管理扩展（Todo Extension）。
+轻量级 Pi 1.3.0 待办事项管理扩展。为复杂任务提供结构化计划跟踪：显式 API 驱动、会话内持久化、TUI 挂件实时反映进度。
 
-## 特性
+## 特性概览
 
-- **独立性**：独立于 `pi-planner-only`，不拦截工具集、不自动接管对话模式、不通过自然语言猜测进度，完全通过显式结构化 API 驱动。
-- **结构化工具 API (`todo`)**：
-  - `set`：批量设定任务列表（替换当前所有待办事项），必须提供显式 `items` 数组，自动分配正整数 ID（1..N），最多支持 20 项。
-  - `update`：原子批量更新任务状态、标题或阻塞原因（必须提供正整数 ID，支持在一批操作中完成上一任务并启动下一任务）。
-  - `list`：查询当前待办事项列表。
-  - `clear`：清空待办列表。
-  - 声明 `outputSchema`：针对成功与失败调用均返回一致的 `structuredContent`（`{ items: [...], error?: string }`），便于代码模式（codemode）程序化读取。
-- **四种任务状态**：
-  - `pending`（[待办]）：缺省状态（仅在未指定 status 时缺省为 pending，严格拒绝空串、null、false）。
-  - `in_progress`（[进行中]）：全局最多只能有 1 项处于进行中。
-  - `completed`（[已完成]）
-  - `blocked`（[已阻塞]）：设置为阻塞时必须提供非空 `reason`（<=240 字符）；离开阻塞状态时自动清理历史原因；非阻塞任务上提供非法 reason 亦会被拒绝。
-- **终端交互与 TUI 挂件**：
-  - 挂件以组件工厂函数注册（`render(width: number)`），动态适应终端视口实际宽度，不采用固定字符宽度。
-  - 采用 `@earendil-works/pi-tui` 的 `truncateToWidth` 与 `visibleWidth` 处理多字节 CJK 与 Emoji 字符宽度截断。
-  - 编辑器上方展示 1 行纯文字标题（`待办 1/3`，任务行被截断时追加 `还有 N 项`），下接按 ID 顺序排列的任务行，最多 6 行；已完成任务同样显示。
-  - 任务行超过 6 行时优先保留可执行任务（已阻塞 > 进行中 > 最早的待办），展示顺序仍为 ID 顺序。
-  - 状态字形与主题语义色对齐宿主风格：`✖` 已阻塞（warning）、`◐` 进行中（accent，加粗）、`○` 待办（muted）、`✓` 已完成（success）；已完成文本以弱化色渲染，阻塞原因以警示色内联显示在任务行尾。
-  - 全部完成时自动折叠为单行（`✓ 2/2 全部完成`）；待办为空时自动隐藏挂件。
-  - 标题不绘制进度条或百分比：深色主题下低对比度的轨道字形几乎不可见，纯文字计数在任何背景下都清晰，且在极窄宽度下自然降级截断，不写入任何未闭合的 ANSI 序列。
-  - `/todos` 斜杠命令：弹出只读滚动列表对话框，标题显示 `待办事项 · 1/4 完成 (按 ESC 退出)`，选项为 `✓ #1 任务` 形式并附阻塞原因，按 ESC 退出。
-  - 终端安全过滤：去除 C0/C1 控制字符、OSC/DCS 序列、Unicode Bidi 控制符并折叠连续换行。
-- **快照持久化与上下文感知**：
-  - 状态通过 `pi.appendEntry('pi-todo-state', { version: 1, items: [...] })` 存储于会话树中。
-  - 会话启动 (`session_start`，支持 startup, new, reload, resume, fork 等原因) 与分支切换 (`session_tree`) 仅读取当前分支最新快照；空分支或最新快照非法安全重置为空并提供告警，不回退到旧快照。
-  - 上下文恢复 (`context`)：在对话压缩后自动向模型注入单条短时上下文消息（`customType: 'pi-todo-context'`），过滤旧历史，且仅在存在未完成任务时注入。
+- **独立轻量**：不拦截工具集、不接管对话模式、不通过自然语言猜测进度，完全由显式结构化 API 驱动。
+- **原子校验**：任何非法输入都整批拒绝，内存状态与持久化快照均不变。
+- **会话感知**：状态存入会话树，分支切换、压缩恢复后进度不丢。
+- **主题化 TUI**：挂件颜色跟随宿主主题，多字节字符安全截断。
 
-## 工具调用示例
+## `todo` 工具
 
-### 1. 创建待办计划 (`set`)
+单一工具 `todo`，通过 `action` 区分四种操作：
+
+| action | 说明 |
+| --- | --- |
+| `set` | 批量设定任务列表，**替换**当前全部待办。必须提供 `items` 数组，自动分配 1..N 的 ID，最多 20 项；空数组等价于 `clear`。 |
+| `update` | 原子批量更新任务的 `status` / `text` / `reason`，按正整数 `id` 定位。支持在同一批操作中完成上一任务并启动下一任务。 |
+| `list` | 查询当前待办列表。 |
+| `clear` | 清空待办列表。 |
+
+成功与失败均返回一致的 `structuredContent`（`{ items: [...], error?: string }`），便于代码模式（codemode）程序化读取；失败时另带 `isError: true`。
+
+### 任务状态
+
+四种状态，各有约束：
+
+- `pending`（○ 待办）：缺省状态。仅当字段完全未提供时才缺省，显式的空串、`null`、`false` 一律拒绝。
+- `in_progress`（◐ 进行中）：全局最多 1 项。
+- `completed`（✓ 已完成）
+- `blocked`（✖ 已阻塞）：进入阻塞时必须提供非空 `reason`（≤240 字符）；同一批次重复标记阻塞可沿用已有原因；离开阻塞状态时自动清理原因；在非阻塞任务上提供非法 `reason` 会被拒绝。
+
+### 调用示例
+
+创建计划（`set`）：
+
 ```json
 {
   "action": "set",
@@ -45,7 +46,8 @@
 }
 ```
 
-### 2. 更新任务进度 (`update`)
+更新进度（`update`）：
+
 ```json
 {
   "action": "update",
@@ -56,40 +58,70 @@
 }
 ```
 
-### 3. 清空待办计划 (`clear`)
+标记阻塞（`update`，必须附原因）：
+
 ```json
 {
-  "action": "clear"
+  "action": "update",
+  "updates": [
+    { "id": 2, "status": "blocked", "reason": "等待上游接口联调环境" }
+  ]
 }
 ```
 
-## 安装与配置
+清空（`clear`）：
+
+```json
+{ "action": "clear" }
+```
+
+## TUI 挂件与命令
+
+- 挂件以组件工厂函数注册（`render(width: number)`），动态适应终端实际宽度；通过 `@earendil-works/pi-tui` 的 `truncateToWidth` / `visibleWidth` 正确处理 CJK 与 Emoji 宽度。
+- 布局：编辑器上方 1 行标题（`待办 1/3`）+ 按 ID 顺序的任务行，任务行最多 6 行，已完成任务同样显示。
+- 超过 6 行时优先保留可执行任务（已阻塞 > 进行中 > 最早的待办），其余隐藏，标题追加 `· 还有 N 项`；展示顺序仍为 ID 顺序。
+- 配色对齐宿主主题语义色：`✖` 阻塞（warning）、`◐` 进行中（accent、加粗）、`○` 待办（muted）、`✓` 已完成（success，文本弱化）；阻塞原因以警示色内联在任务行尾。
+- 全部完成时折叠为单行（`✓ 2/2 全部完成`）；待办为空时隐藏挂件。
+- 标题不绘制进度条或百分比：纯文字计数在任何主题下都清晰，极窄宽度自然降级截断，且不产生未闭合的 ANSI 序列。
+- `/todos` 斜杠命令：只读滚动列表对话框，标题形如 `待办事项 · 1/4 完成 (按 ESC 退出)`，每行为 `✓ #1 任务`（阻塞项附原因），按 ESC 退出。
+- 终端安全过滤：所有展示文本去除 C0/C1 控制字符、OSC/DCS 转义序列、Unicode Bidi 控制符并折叠连续换行，防止任务内容注入终端控制序列。
+
+## 持久化与上下文恢复
+
+- 每次成功变更后通过 `pi.appendEntry('pi-todo-state', { version: 1, items: [...] })` 将快照写入会话树。
+- 会话启动（`session_start`，覆盖 startup / new / reload / resume / fork）与分支切换（`session_tree`）只读取**当前分支**的最新快照；空分支或非法快照安全重置为空并告警，不回退到旧快照。
+- 上下文压缩（`context`）后自动注入单条短时上下文消息（`customType: 'pi-todo-context'`），并过滤历史中的旧注入；仅在存在未完成任务时注入。
+
+## 模型使用指引
+
+工具注册了 `promptGuidelines`，引导模型正确使用待办：
+
+- 多步任务用 3–6 步的短计划；简单问答或单步任务不建待办。
+- 只在里程碑处显式更新状态；同时最多 1 项进行中；阻塞必须给原因。
+- 委派给子代理的实现不等于已验证完成：核对证据后才标 `completed`。
+- 切换到无关任务时替换或清空计划。
+
+## 安装
 
 从 GitHub 安装到个人配置，然后在当前会话执行 `/reload`（或重新启动 Pi）：
 
 ```bash
 pi install git@github.com:bioShaun/pi-todo.git
-```
-
-也可以通过 HTTPS 安装：
-
-```bash
+# 或 HTTPS
 pi install https://github.com/bioShaun/pi-todo.git
 ```
 
-安装器会把该来源记录到 `~/.pi/agent/settings.json`，这是正常行为。也可以在配置中直接使用：
+安装器会把该来源记录到 `~/.pi/agent/settings.json`，这是正常行为。也可以直接在配置中声明：
 
 ```json
 {
   "packages": [
-    {
-      "source": "git@github.com:bioShaun/pi-todo.git"
-    }
+    { "source": "git@github.com:bioShaun/pi-todo.git" }
   ]
 }
 ```
 
-或者克隆本仓库后通过命令行单次加载：
+或者克隆本仓库后单次加载：
 
 ```bash
 git clone git@github.com:bioShaun/pi-todo.git
@@ -98,29 +130,40 @@ pi --extension ./pi-todo/index.ts
 
 ## 测试
 
-本项目使用 Node.js 内置测试运行器，支持自动推导本地 Pi 安装路径：
+使用 Node.js 内置测试运行器，自动推导本地 Pi 安装路径：
 
 ```bash
 npm test
 ```
 
-也可以显式指定主机依赖路径：
+显式指定主机依赖路径：
 
 ```bash
 PI_TEST_HOST_ROOT="$HOME/.pi/agent/install/releases/1.3.0/node_modules" npm test
 ```
 
-使用真实宿主 SDK 做离线验收（无需模型请求）：
+真实宿主 SDK 离线验收（无需模型请求），覆盖宿主加载、真实工具包装、JSONL 会话写入、重新打开会话、树分支切换与上下文恢复；证据写入 `.work/`，交互终端的人工视觉检查另行进行：
 
 ```bash
 node scripts/host-smoke.mjs
 ```
 
-脚本覆盖宿主加载、真实工具包装、JSONL 会话写入、重新打开会话、树分支切换与上下文恢复。证据写入 `.work/`；交互终端的人工视觉检查另行进行。
-
 ## 约束与常量
 
-- `MAX_ITEMS`: 20
-- `MAX_TEXT`: 160 字符
-- `MAX_REASON`: 240 字符
-- 任何非法输入（未知 ID、重复 ID、标题为空、阻塞缺少原因、多项进行中等）均保持操作的原子性：不修改内存状态、不产生持久化快照，并返回 `isError: true`。
+| 常量 | 值 | 说明 |
+| --- | --- | --- |
+| `MAX_ITEMS` | 20 | 单次计划最多任务数 |
+| `MAX_TEXT` | 160 字符 | 任务标题长度上限 |
+| `MAX_REASON` | 240 字符 | 阻塞原因长度上限 |
+
+非法输入一律整批原子拒绝（返回 `isError: true`，不修改内存、不写入快照），包括：未知 ID、重复 ID、空标题、超限文本、阻塞缺少原因、多项同时进行中等。
+
+## 项目结构
+
+| 文件 | 职责 |
+| --- | --- |
+| `index.ts` | 扩展入口：注册 `todo` 工具、`/todos` 命令、挂件与事件处理 |
+| `state.ts` | `TodoStateManager`：状态模型、校验、快照提交与分支恢复 |
+| `view.ts` | 纯渲染函数：挂件行、对话框文本、终端安全过滤 |
+| `scripts/host-smoke.mjs` | 真实宿主 SDK 离线验收脚本 |
+| `tests/` | Node.js 内置测试用例 |
