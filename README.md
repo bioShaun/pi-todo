@@ -88,11 +88,14 @@
 - 计划超过 6 项时，挂件底部显示“另有 N 项 · /todos 查看全部”；摘要始终统计整个计划。显示限制不影响任务存储、工具查询或 `/todos` 完整详情。
 - 终端安全过滤：所有展示文本去除 C0/C1 控制字符、OSC/DCS 转义序列、Unicode Bidi 控制符并折叠连续换行，防止任务内容注入终端控制序列。
 
-## 持久化与上下文恢复
+## 持久化与上下文快照
 
 - 每次成功变更后通过 `pi.appendEntry('pi-todo-state', { version: 1, items: [...] })` 将快照写入会话树。
 - 会话启动（`session_start`，覆盖 startup / new / reload / resume / fork）与分支切换（`session_tree`）只读取**当前分支**的最新快照；空分支或非法快照安全重置为空并告警，不回退到旧快照。
-- 上下文压缩（`context`）后自动注入单条短时上下文消息（`customType: 'pi-todo-context'`），并过滤历史中的旧注入；仅在存在未完成任务时注入。
+- **前缀缓存友好（Prompt Cache Preservation）**：不使用 `context` 钩子过滤或重写历史消息。工具执行成功且实际改变列表后（`set` / `update` / `clear`），通过 `pi.sendMessage` 追加持久隐藏的 `customType: 'pi-todo-context'` 快照（`{ triggerTurn: false }`）；`list`、执行失败或无实质变更（no-op）不追加。
+- 任务全部完成或清空时追加空列表快照（`{"todos":[]}`），覆盖旧状态语义且不破坏历史；快照内容不含易变时间戳。
+- 会话启动、分支切换（`session_start` / `session_tree`）与压缩后（`session_compact`），检查当前压缩感知投影（`buildSessionProjection().messages`）中最新的快照；仅当快照缺失或内容不一致时才追加恢复一次，同内容快照不重复追加。压缩重试（`willRetry: true`）通过 `deliverAs: 'steer'` 投递。
+- 注：前缀只追加特性在本地经宿主 `convertToLlm` 与 `convertResponsesMessages` 离线投影验证（pi-todo 不再改动历史和本地投影证据，远端 HTTP 前缀与实际缓存表现待实测）。
 
 ## 模型使用指引
 
@@ -165,7 +168,8 @@ node scripts/host-smoke.mjs
 | 文件 | 职责 |
 | --- | --- |
 | `index.ts` | 扩展入口：注册 `todo` 工具、`/todos` 命令、挂件与事件处理 |
+| `context.ts` | 消息上下文辅助：持久快照格式化、差异比较、投影快照提取与恢复判定 |
 | `state.ts` | `TodoStateManager`：状态模型、校验、快照提交与分支恢复 |
 | `view.ts` | 纯渲染函数：挂件行、对话框文本、终端安全过滤 |
-| `scripts/host-smoke.mjs` | 真实宿主 SDK 离线验收脚本 |
-| `tests/` | Node.js 内置测试用例 |
+| `scripts/host-smoke.mjs` | 真实宿主 SDK 离线验收脚本（无模型网络请求） |
+| `tests/` | Node.js 内置测试用例（状态、边界、UI、前缀缓存与上下文恢复） |

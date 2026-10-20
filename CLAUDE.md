@@ -1,12 +1,13 @@
 # CLAUDE.md - pi-todo Extension
 
 ## Overview
-`pi-todo` is a standalone, lightweight todo extension designed for Pi 1.3.0. It provides an explicit structured tool (`todo`), a slash command (`/todos`), an above-editor TUI widget, session branch persistence, and ephemeral context injection across compaction.
+`pi-todo` is a standalone, lightweight todo extension designed for Pi 1.3.0. It provides an explicit structured tool (`todo`), a slash command (`/todos`), an above-editor TUI widget, session branch persistence, and persistent context injection across compaction.
 
 ## Architecture & Interfaces
 
 ### 1. Source Structure
-- `index.ts`: Entrypoint registering the `todo` tool (with `outputSchema` and `structuredContent`), `/todos` slash command, dynamic widget factory (`render(width)`), and lifecycle listeners (`session_start`, `session_tree`, `context`).
+- `index.ts`: Entrypoint registering the `todo` tool (with `outputSchema` and `structuredContent`), `/todos` slash command, dynamic widget factory (`render(width)`), and lifecycle listeners (`session_start`, `session_tree`, `session_compact`).
+- `context.ts`: Context snapshot formatting, list equality checks, projection latest snapshot extraction, and branch/compaction recovery logic.
 - `state.ts`: Core data model (`TodoItem`, `TodoStateSnapshot`), validation functions, immutable cloning, atomic mutations, and session branch restoration logic.
 - `view.ts`: Status label mapping, terminal string sanitization (C0/C1 controls, OSC/DCS/APC sequences, bidi controls, collapsed newlines), actual-width truncation (`truncateToWidth`, `visibleWidth` from `@earendil-works/pi-tui`), and theme-aware widget/dialog rendering. Widget components implement `render(width)` and `invalidate()`.
   - `renderWidgetLines(items, width, theme?, options?)` renders a text-only progress header, at most 6 tasks, and a details hint with the hidden count. Priorities are in progress > blocked > pending > completed, with lower IDs selected first within each status; selected tasks display in ID order. `options.collapsed` shows only the summary. All lines are truncated to the given width.
@@ -67,10 +68,14 @@ All results return `structuredContent` matching `{ items: TodoItem[], error?: st
 - On `session_start` and `session_tree`, state is restored exclusively from the latest custom entry in `ctx.sessionManager.getBranch()`. Restored IDs must follow the original `1..N` array order; gaps, reordered IDs, and out-of-range IDs invalidate the snapshot.
 - An empty branch resets state to empty. Corrupted latest entries trigger a warning notification and reset state to empty (without falling back to older snapshots).
 
-### 5. Compaction Context Injection
-- The `context` event handler removes any previous messages matching `customType: "pi-todo-context"`.
-- If there are unfinished tasks (`pending`, `in_progress`, `blocked`), it appends one ephemeral custom message (`role: "custom"`, `display: false`, `timestamp: Date.now()`).
-- When all tasks are completed or list is empty, no context message is appended.
+### 5. Persistent Context Snapshots & Prompt Cache Preservation
+- The extension does NOT register a `context` hook and never rewrites or filters historical session messages.
+- After state persistence succeeds on state-changing `set`, `update`, and `clear` operations, the tool calls `pi.sendMessage` to append a persistent hidden message (`customType: "pi-todo-context"`, `content: JSON.stringify({ todos: items })`, `display: false`, `{ triggerTurn: false }`).
+- When all tasks are completed or when cleared, it appends a snapshot with `{ todos: [] }` to update model context semantics without modifying history.
+- Context contents contain no volatile timestamps (using host session entry timestamps).
+- On `session_start` and `session_tree`, after restoring branch state, it inspects the compaction-aware projection (`buildSessionProjection().messages`); if the latest snapshot differs from the current branch or is missing, it appends a recovery snapshot. If there are no tasks and no previous snapshot in the projection, nothing is appended. Identical snapshots are never duplicated.
+- On `session_compact`, if compaction removed the latest snapshot, a recovery snapshot is appended once. For `willRetry: true` (overflow recovery), it delivers via steering (`triggerTurn: true, deliverAs: "steer"`); otherwise `{ triggerTurn: false }`.
+- Consecutive model turns verified offline via `convertToLlm` + `convertResponsesMessages` to ensure strict append-only request prefix for prompt cache compatibility (local projection invariant; no claims made on entire remote HTTP prefix or remote cache hits).
 
 ## Known Limits & Invariants
 - `MAX_ITEMS`: 20 items maximum.

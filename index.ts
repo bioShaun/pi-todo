@@ -1,8 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Type, type Static } from "typebox";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { TodoStateManager, type TodoItem } from "./state.ts";
+import {
+  formatTodoContextContent,
+  areTodoItemsEqual,
+  getLatestTodoContextContent,
+  shouldAppendContextSnapshot,
+  TODO_CONTEXT_TYPE,
+} from "./context.ts";
 import {
   formatTodoDialogTitle,
   formatToolSummary,
@@ -130,6 +136,27 @@ export default function todoExtension(pi: ExtensionAPI): void {
     pi.appendEntry(type, data);
   });
 
+  function syncContextSnapshot(
+    ctx?: ExtensionContext,
+    options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }
+  ): void {
+    const items = stateManager.getItems();
+    const messages = ctx?.sessionManager?.buildSessionProjection?.().messages;
+    const latestContent = getLatestTodoContextContent(messages);
+    if (!shouldAppendContextSnapshot(items, latestContent)) {
+      return;
+    }
+    const content = formatTodoContextContent(items);
+    pi.sendMessage(
+      {
+        customType: TODO_CONTEXT_TYPE,
+        content,
+        display: false,
+      },
+      options ?? { triggerTurn: false }
+    );
+  }
+
   function updateWidget(ctx?: ExtensionContext): void {
     if (!ctx || ctx.mode !== "tui" || !ctx.ui) {
       return;
@@ -186,6 +213,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
         return makeError(stateManager.getItems(), "Action is required");
       }
 
+      const prevItems = stateManager.getItems();
       let result: TodoExecutionResult;
       switch (params.action) {
         case "set":
@@ -209,6 +237,21 @@ export default function todoExtension(pi: ExtensionAPI): void {
       if (!result.isError) {
         if (params.action === "set" || params.action === "clear") collapsed = false;
         updateWidget(ctx);
+
+        if (params.action !== "list") {
+          const newItems = stateManager.getItems();
+          if (!areTodoItemsEqual(prevItems, newItems)) {
+            const targetContent = formatTodoContextContent(newItems);
+            pi.sendMessage(
+              {
+                customType: TODO_CONTEXT_TYPE,
+                content: targetContent,
+                display: false,
+              },
+              { triggerTurn: false }
+            );
+          }
+        }
       }
       return result;
     },
@@ -272,6 +315,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
       ctx.ui?.notify?.(sanitizeText(msg), "warning");
     });
     updateWidget(ctx);
+    syncContextSnapshot(ctx, { triggerTurn: false });
   });
 
   pi.on("session_tree", async (_event, ctx) => {
@@ -281,37 +325,13 @@ export default function todoExtension(pi: ExtensionAPI): void {
       ctx.ui?.notify?.(sanitizeText(msg), "warning");
     });
     updateWidget(ctx);
+    syncContextSnapshot(ctx, { triggerTurn: false });
   });
 
-  pi.on("context", async (event, _ctx) => {
-    const messages = event.messages || [];
-    const filtered = messages.filter(
-      (message: AgentMessage) => message.role !== "custom" || message.customType !== "pi-todo-context"
-    );
-
-    const items = stateManager.getItems();
-    const unfinished = items.filter((i) => i.status !== "completed");
-    if (unfinished.length === 0) {
-      return { messages: filtered };
-    }
-
-    const contextMsg: Extract<AgentMessage, { role: "custom" }> = {
-      role: "custom",
-      customType: "pi-todo-context",
-      content: JSON.stringify({
-        todos: items.map((i) => ({
-          id: i.id,
-          text: i.text,
-          status: i.status,
-          ...(i.reason ? { reason: i.reason } : {}),
-        })),
-      }),
-      display: false,
-      timestamp: Date.now(),
-    };
-
-    return {
-      messages: [...filtered, contextMsg],
-    };
+  pi.on("session_compact", async (event, ctx) => {
+    const options = event.willRetry
+      ? { triggerTurn: true, deliverAs: "steer" as const }
+      : { triggerTurn: false };
+    syncContextSnapshot(ctx, options);
   });
 }

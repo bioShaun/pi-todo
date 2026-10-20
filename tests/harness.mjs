@@ -46,6 +46,7 @@ export async function createExtensionTestHarness(options = {}) {
 
   const runtime = createExtensionRuntime();
   const customEntries = [];
+  const sentMessages = [];
 
   runtime.appendEntry = (customType, data) => {
     if (options.appendEntryError) {
@@ -55,6 +56,16 @@ export async function createExtensionTestHarness(options = {}) {
       type: "custom",
       customType,
       data: JSON.parse(JSON.stringify(data)),
+    });
+  };
+
+  runtime.sendMessage = (message, sendOptions) => {
+    if (options.sendMessageError) {
+      throw new Error(options.sendMessageError);
+    }
+    sentMessages.push({
+      message: JSON.parse(JSON.stringify(message)),
+      options: sendOptions ? JSON.parse(JSON.stringify(sendOptions)) : undefined,
     });
   };
 
@@ -78,10 +89,55 @@ export async function createExtensionTestHarness(options = {}) {
     let detailClosed = false;
     const terminal = { rows: 20 };
 
+    function buildDefaultProjection(sourceEntries = customEntries) {
+      const messages = [];
+      for (const entry of sourceEntries) {
+        if (entry.type === "custom_message") {
+          messages.push({
+            role: "custom",
+            customType: entry.customType,
+            content: entry.content ?? [],
+            display: entry.display,
+            details: entry.details,
+            timestamp: entry.timestamp || 1000,
+          });
+        } else if (entry.type === "message") {
+          messages.push(entry.message);
+        }
+      }
+      for (const s of sentMessages) {
+        messages.push({
+          role: "custom",
+          customType: s.message.customType,
+          content: s.message.content ?? [],
+          display: s.message.display,
+          details: s.message.details,
+          timestamp: 2000,
+        });
+      }
+      return { messages };
+    }
+
+    const defaultSessionManager = {
+      getBranch: () => customEntries,
+      buildSessionProjection: () => buildDefaultProjection(customEntries),
+    };
+
+    const effectiveSessionManager = overrides.sessionManager
+      ? {
+          buildSessionProjection: () => {
+            const branch = overrides.sessionManager.getBranch?.() || [];
+            return buildDefaultProjection(branch);
+          },
+          ...overrides.sessionManager,
+        }
+      : defaultSessionManager;
+
     const mockCtx = {
       mode: "tui",
       hasUI: true,
       cwd: process.cwd(),
+      ...overrides,
       ui: {
         notify: (msg, type) => {
           notifications.push({ msg, type });
@@ -98,11 +154,9 @@ export async function createExtensionTestHarness(options = {}) {
         custom: async (factory) => {
           detailComponent = factory({ terminal, requestRender() {} }, createThemeStub(), {}, () => { detailClosed = true; });
         },
+        ...overrides.ui,
       },
-      sessionManager: {
-        getBranch: () => customEntries,
-      },
-      ...overrides,
+      sessionManager: effectiveSessionManager,
     };
 
     return {
@@ -138,6 +192,7 @@ export async function createExtensionTestHarness(options = {}) {
     todosCmd,
     runtime,
     customEntries,
+    sentMessages,
     createMockContext,
   };
 }

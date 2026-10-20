@@ -362,15 +362,15 @@ test("/todos details wrap full text, scroll and close without changing the plan"
   assert.equal(h.customEntries.length,1, "reading details never changes state");
 });
 
-test("context handler: appends latest ephemeral custom message with unfinished tasks, filters old ones", async () => {
+test("context handler removed: extension does not register context hook, uses persistent custom messages via sendMessage", async () => {
   const harness = await createExtensionTestHarness();
-  const { tool, ext, createMockContext } = harness;
+  const { tool, ext, sentMessages, createMockContext } = harness;
   const mock = createMockContext();
 
   const contextHandlers = ext.handlers.get("context") || [];
-  assert.ok(contextHandlers.length > 0, "context handler registered");
+  assert.equal(contextHandlers.length, 0, "context hook must not be registered");
 
-  // 1. With unfinished tasks
+  // 1. With unfinished tasks, tool execution appends persistent custom message
   await tool.definition.execute("call-1", {
     action: "set",
     items: [
@@ -379,25 +379,15 @@ test("context handler: appends latest ephemeral custom message with unfinished t
     ],
   }, undefined, undefined, mock.ctx);
 
-  const existingMessages = [
-    { role: "user", content: "Hello" },
-    { role: "custom", customType: "pi-todo-context", content: "Old snapshot", display: false, timestamp: 1 },
-    { role: "assistant", content: "Hi" },
-  ];
+  assert.equal(sentMessages.length, 1, "exactly one custom message sent");
+  assert.equal(sentMessages[0].message.customType, "pi-todo-context");
+  assert.equal(sentMessages[0].message.display, false);
+  assert.equal(sentMessages[0].options?.triggerTurn, false);
+  const parsed1 = JSON.parse(sentMessages[0].message.content);
+  assert.equal(parsed1.todos.length, 2);
+  assert.equal(parsed1.todos[0].text, "Task 1");
 
-  const res1 = await contextHandlers[0]({ type: "context", messages: existingMessages }, mock.ctx);
-  assert.ok(res1?.messages, "context returned messages");
-  // Must remove old pi-todo-context message
-  const todoMessages = res1.messages.filter(m => m.customType === "pi-todo-context");
-  assert.equal(todoMessages.length, 1, "exactly one ephemeral custom message");
-  assert.equal(todoMessages[0].display, false);
-  assert.match(todoMessages[0].content, /Task 1/);
-  assert.match(todoMessages[0].content, /Task 2/);
-  // Other messages untouched
-  assert.equal(res1.messages[0].role, "user");
-  assert.equal(res1.messages[1].role, "assistant");
-
-  // 2. When all completed, no custom message injected
+  // 2. When all completed, appends snapshot with empty todos
   await tool.definition.execute("call-2", {
     action: "update",
     updates: [
@@ -406,9 +396,9 @@ test("context handler: appends latest ephemeral custom message with unfinished t
     ],
   }, undefined, undefined, mock.ctx);
 
-  const res2 = await contextHandlers[0]({ type: "context", messages: existingMessages }, mock.ctx);
-  const todoMessages2 = res2.messages.filter(m => m.customType === "pi-todo-context");
-  assert.equal(todoMessages2.length, 0, "no context message when all tasks are completed");
+  assert.equal(sentMessages.length, 2);
+  const parsed2 = JSON.parse(sentMessages[1].message.content);
+  assert.deepEqual(parsed2.todos, [], "todos snapshot is empty array when all tasks are completed");
 });
 
 test("regression: {action: 'set'} requires explicit items array and preserves seeded state on malformed inputs", async () => {
