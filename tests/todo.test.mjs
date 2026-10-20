@@ -247,7 +247,7 @@ test("branch restoration: session_start restores branch, empty branch clears sta
   assert.equal(mockCtx3.getWidgetContent(), undefined, "corrupt branch safely clears state/widget");
 });
 
-test("UI rendering: widget summary + at most 3 rows, all completed collapses, empty hidden", async () => {
+test("UI rendering: widget shows the plan in id order including completed, collapses when all done, hides when empty", async () => {
   const harness = await createExtensionTestHarness();
   const { tool, createMockContext } = harness;
   const mock = createMockContext();
@@ -272,29 +272,44 @@ test("UI rendering: widget summary + at most 3 rows, all completed collapses, em
   assert.match(completedLines[0], /2\/2/);
   assert.match(completedLines[0], /全部完成/);
 
-  // 3. Multiple tasks: 1 summary line + at most 3 rows, priority blocked/in_progress/pending
+  // 3. Mixed plan: header + one row per task, in id order, completed included
   await tool.definition.execute("call-3", {
     action: "set",
     items: [
+      { text: "Done 1", status: "completed" },
       { text: "Pending 1", status: "pending" },
-      { text: "Pending 2", status: "pending" },
       { text: "Blocked 1", status: "blocked", reason: "waiting" },
       { text: "In Progress 1", status: "in_progress" },
-      { text: "Pending 3", status: "pending" },
     ],
   }, undefined, undefined, mock.ctx);
 
   const mixedLines = mock.getWidgetContent();
-  assert.equal(mixedLines.length, 4, "1 summary + 3 detail rows");
-  assert.match(mixedLines[0], /待办 0\/5/, "summary shows completed/total counts");
-  assert.match(mixedLines[0], /还有 2 项/, "summary reports hidden unfinished tasks");
-  // Row 1 should be Blocked 1 (with reason and glyph)
-  assert.match(mixedLines[1], /✖ #3 Blocked 1/);
-  assert.match(mixedLines[1], /waiting/);
-  // Row 2 should be In Progress 1
-  assert.match(mixedLines[2], /◐ #4 In Progress 1/);
-  // Row 3 should be Pending 1
-  assert.match(mixedLines[3], /○ #1 Pending 1/);
+  assert.equal(mixedLines.length, 5, "1 header + 4 task rows");
+  assert.equal(mixedLines[0].trim(), "待办 1/4", "header is counts only, no bar or percentage");
+  assert.match(mixedLines[1], /✓ #1 Done 1/, "completed task is displayed");
+  assert.match(mixedLines[2], /○ #2 Pending 1/);
+  assert.match(mixedLines[3], /✖ #3 Blocked 1/);
+  assert.match(mixedLines[3], /waiting/, "blocked reason shown");
+  assert.match(mixedLines[4], /◐ #4 In Progress 1/);
+
+  // 4. Long plan: rows are capped and the header reports the hidden count,
+  //    keeping the most actionable tasks (blocked/in_progress) visible.
+  await tool.definition.execute("call-4", {
+    action: "set",
+    items: Array.from({ length: 9 }, (_, i) => ({
+      text: `Task ${i + 1}`,
+      status: i === 0 ? "blocked" : i === 1 ? "in_progress" : "pending",
+      ...(i === 0 ? { reason: "waiting" } : {}),
+    })),
+  }, undefined, undefined, mock.ctx);
+
+  const cappedLines = mock.getWidgetContent();
+  assert.equal(cappedLines.length, 7, "1 header + 6 task rows");
+  assert.match(cappedLines[0], /待办 0\/9/);
+  assert.match(cappedLines[0], /还有 3 项/, "header reports hidden rows");
+  assert.match(cappedLines[1], /✖ #1 Task 1/, "blocked task kept");
+  assert.match(cappedLines[2], /◐ #2 Task 2/, "in-progress task kept");
+  assert.match(cappedLines[3], /○ #3 Task 3/);
 });
 
 test("sanitization: control characters and newlines stripped, width truncated safely", async () => {
@@ -537,7 +552,7 @@ test("regression: widget factory component render(width) handles CJK/emoji at 12
   }
 });
 
-test("UI rendering: themed widget uses semantic colors and progress bar, and drops the bar when narrow", async () => {
+test("UI rendering: themed widget uses semantic colors and keeps the header text-only", async () => {
   const { getHostRoot } = await import("./harness.mjs");
   const tui = await import(getHostRoot() + "/@earendil-works/pi-tui/dist/index.js");
 
@@ -560,32 +575,31 @@ test("UI rendering: themed widget uses semantic colors and progress bar, and dro
   assert.ok(comp, "factory returns component for a themed host");
 
   const lines = comp.render(60);
-  assert.equal(lines.length, 4, "header + 3 unfinished rows");
+  assert.equal(lines.length, 5, "header + 4 task rows (completed included)");
   for (const line of lines) {
     assert.ok(tui.visibleWidth(line) <= 60, `line width exceeds 60 cols: ${JSON.stringify(line)}`);
   }
 
   assert.match(lines[0], /\x1b\[/, "header carries ANSI styling");
-  assert.match(lines[0], /█/, "progress bar rendered when width allows");
   assert.ok(theme.tokens.includes("accent"), "accent token used for counts");
-  assert.ok(theme.tokens.includes("success"), "success token used for the filled bar");
   assert.ok(theme.tokens.includes("warning"), "warning token used for the blocked task");
+  assert.ok(theme.tokens.includes("success"), "success token used for the completed glyph");
   assert.ok(theme.tokens.includes("dim") || theme.tokens.includes("muted"), "secondary tokens used");
 
   const plain = lines.map((line) => tui.stripTerminalSequences(line));
-  assert.match(plain[0], /待办 1\/4/);
+  assert.equal(plain[0].trim(), "待办 1/4", "header is counts only, without a bar or percentage");
   assert.match(plain[1], /✖ #1 阻塞任务 · 等待上游/);
   assert.match(plain[2], /◐ #2 进行中任务/);
   assert.match(plain[3], /○ #3 待办任务/);
+  assert.match(plain[4], /✓ #4 已完成任务/);
 
-  // Narrow terminals drop the bar and stay within bounds without leaking escapes.
+  // Narrow terminals stay within bounds without leaking escapes.
   const narrow = comp.render(12);
   assert.ok(narrow.length > 0);
   for (const line of narrow) {
     assert.ok(tui.visibleWidth(line) <= 12, `narrow line exceeds 12 cols: ${JSON.stringify(line)}`);
     assert.doesNotMatch(tui.stripTerminalSequences(line), /[\x00-\x1f\x7f-\x9f]/);
   }
-  assert.doesNotMatch(narrow[0], /█/, "progress bar dropped at narrow widths");
 });
 
 test("regression: simulated session_start reasons and invalid latest snapshot does not fall back", async () => {

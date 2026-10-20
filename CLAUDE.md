@@ -56,9 +56,9 @@ All results return `structuredContent` matching `{ items: TodoItem[], error?: st
   ```
 
 ### 3. TUI Widget & Actual-Width Rendering
-- Widget is registered via a factory function returning `{ render(width: number): string[] }`; the host passes `(tui, theme)` to the factory, and the theme is forwarded to `renderWidgetLines(items, width, theme)` so semantic tokens (`accent`, `success`, `warning`, `muted`, `dim`, `borderMuted`) follow the active theme. `theme` stays optional for headless rendering.
+- Widget is registered via a factory function returning `{ render(width: number): string[] }`; the host passes `(tui, theme)` to the factory, and the theme is forwarded to `renderWidgetLines(items, width, theme)` so semantic tokens (`accent`, `success`, `warning`, `muted`, `dim`) follow the active theme. `theme` stays optional for headless rendering.
 - Available terminal width is dynamically passed to `renderWidgetLines(items, width, theme)`.
-- Layout: one header line (`待办 c/t`, actual-width progress bar, `还有 N 项` when unfinished rows are hidden) plus at most 3 prioritized unfinished rows (`✖` blocked, `◐` in progress, `○` pending). All-completed collapses to one `✓ c/t 全部完成` line; an empty list hides the widget.
+- Layout: one text-only header line (`待办 c/t`, plus `还有 N 项` when rows are hidden) followed by up to 6 task rows in id order: `✓` completed (dimmed text), `◐` in progress (bold), `○` pending, `✖` blocked with its reason. There is deliberately no progress bar or percentage; low-contrast track glyphs are invisible on dark themes. When the plan exceeds the row budget, the most actionable tasks are kept (blocked > in progress > earliest pending) while display order stays by id. All-completed collapses to one `✓ c/t 全部完成` line; an empty list hides the widget.
 - Line widths are truncated according to terminal column width using `@earendil-works/pi-tui` `truncateToWidth` and measured with `visibleWidth` (supporting CJK and emoji).
 - All strings rendered to the UI (tasks, reasons, statuses, notifications) are sanitized to remove C0/C1 control codes, OSC/DCS sequences, and bidi control characters.
 

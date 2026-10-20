@@ -23,7 +23,7 @@ export function getHostRoot() {
  */
 export function createThemeStub() {
   const tokens = [];
-  const codes = { accent: 36, success: 32, warning: 33, muted: 90, dim: 2, borderMuted: 2 };
+  const codes = { accent: 36, success: 32, warning: 33, muted: 90, dim: 2 };
   return {
     tokens,
     fg(token, text) {

@@ -7,7 +7,7 @@ export { visibleWidth };
  * Foreground theme tokens used by the todo UI. This is a subset of the host
  * `ThemeColor` tokens, so a host `Theme` satisfies `TodoTheme` structurally.
  */
-export type TodoThemeToken = "accent" | "success" | "warning" | "muted" | "dim" | "borderMuted";
+export type TodoThemeToken = "accent" | "success" | "warning" | "muted" | "dim";
 
 /**
  * Minimal structural view of the host `Theme`. Rendering accepts `undefined` so
@@ -48,11 +48,7 @@ const PRIORITY_ORDER: Record<TodoStatus, number> = {
   completed: 4,
 };
 
-const BAR_FILLED = "█";
-const BAR_TRACK = "─";
-const MAX_BAR_SEGMENTS = 10;
-const MIN_BAR_SEGMENTS = 5;
-const MAX_WIDGET_ROWS = 3;
+const MAX_WIDGET_ROWS = 6;
 
 export function sanitizeText(text: string): string {
   if (!text) {
@@ -106,35 +102,6 @@ function statusToken(status: TodoStatus): TodoThemeToken {
   return STATUS_TOKENS[status] ?? "muted";
 }
 
-export function renderProgressBar(
-  completed: number,
-  total: number,
-  segments: number,
-  theme?: TodoTheme
-): string {
-  if (segments <= 0) {
-    return "";
-  }
-  const safeTotal = total > 0 ? total : 1;
-  let filled = Math.round((completed / safeTotal) * segments);
-  if (completed > 0 && filled < 1) {
-    filled = 1;
-  }
-  if (total > 0 && completed >= total) {
-    filled = segments;
-  }
-  if (filled > segments) {
-    filled = segments;
-  }
-  if (filled < 0) {
-    filled = 0;
-  }
-  return (
-    paint(theme, "success", BAR_FILLED.repeat(filled)) +
-    paint(theme, "borderMuted", BAR_TRACK.repeat(segments - filled))
-  );
-}
-
 function renderHeaderLine(
   completed: number,
   total: number,
@@ -142,22 +109,21 @@ function renderHeaderLine(
   maxWidth: number,
   theme?: TodoTheme
 ): string {
-  const counts = `${completed}/${total}`;
   const hintText = hidden > 0 ? ` · 还有 ${hidden} 项` : "";
-  const plainHeader = ` 待办 ${counts}${hintText}`;
-  const barSegments = Math.min(MAX_BAR_SEGMENTS, maxWidth - visibleWidth(plainHeader) - 1);
-
-  let line = ` ${paint(theme, "muted", "待办")} ${paintBold(theme, paint(theme, "accent", counts))}`;
-  if (total > 1 && barSegments >= MIN_BAR_SEGMENTS) {
-    line += ` ${renderProgressBar(completed, total, barSegments, theme)}`;
-  }
-  line += paint(theme, "dim", hintText);
+  const line =
+    ` ${paint(theme, "muted", "待办")} ${paint(theme, "accent", `${completed}/${total}`)}` +
+    paint(theme, "dim", hintText);
   return truncateText(line, maxWidth);
 }
 
 function renderTaskLine(item: TodoItem, maxWidth: number, theme?: TodoTheme): string {
   const text = sanitizeText(item.text);
-  const styledText = item.status === "in_progress" ? paintBold(theme, text) : text;
+  let styledText = text;
+  if (item.status === "in_progress") {
+    styledText = paintBold(theme, text);
+  } else if (item.status === "completed") {
+    styledText = paint(theme, "dim", text);
+  }
 
   let line =
     ` ${paint(theme, statusToken(item.status), statusGlyph(item.status))} ` +
@@ -168,6 +134,27 @@ function renderTaskLine(item: TodoItem, maxWidth: number, theme?: TodoTheme): st
   }
 
   return truncateText(line, maxWidth);
+}
+
+/**
+ * Pick the rows to display in plan order (by id). When the plan is longer than
+ * the row budget, keep the most actionable tasks (blocked, in progress, then
+ * earliest pending) and drop the rest.
+ */
+function selectVisibleItems(items: TodoItem[], cap: number): TodoItem[] {
+  if (items.length <= cap) {
+    return [...items];
+  }
+  const byPriority = [...items].sort((a, b) => {
+    const pa = PRIORITY_ORDER[a.status] || 99;
+    const pb = PRIORITY_ORDER[b.status] || 99;
+    if (pa !== pb) {
+      return pa - pb;
+    }
+    return a.id - b.id;
+  });
+  const keep = new Set(byPriority.slice(0, cap).map((i) => i.id));
+  return items.filter((i) => keep.has(i.id));
 }
 
 export function renderWidgetLines(
@@ -193,24 +180,13 @@ export function renderWidgetLines(
     return [truncateText(line, maxWidth)];
   }
 
-  const unfinished = items
-    .filter((i) => i.status !== "completed")
-    .sort((a, b) => {
-      const pa = PRIORITY_ORDER[a.status] || 99;
-      const pb = PRIORITY_ORDER[b.status] || 99;
-      if (pa !== pb) {
-        return pa - pb;
-      }
-      return a.id - b.id;
-    });
-
-  const displayItems = unfinished.slice(0, MAX_WIDGET_ROWS);
-  const hiddenCount = unfinished.length - displayItems.length;
+  const visibleItems = selectVisibleItems(items, MAX_WIDGET_ROWS);
+  const hiddenCount = total - visibleItems.length;
 
   const lines: string[] = [
     renderHeaderLine(completedCount, total, hiddenCount, maxWidth, theme),
   ];
-  for (const item of displayItems) {
+  for (const item of visibleItems) {
     lines.push(renderTaskLine(item, maxWidth, theme));
   }
   return lines;
