@@ -1,0 +1,116 @@
+# pi-todo
+
+轻量级独立 Pi 1.3.0 待办事项管理扩展（Todo Extension）。
+
+## 特性
+
+- **独立性**：独立于 `pi-planner-only`，不拦截工具集、不自动接管对话模式、不通过自然语言猜测进度，完全通过显式结构化 API 驱动。
+- **结构化工具 API (`todo`)**：
+  - `set`：批量设定任务列表（替换当前所有待办事项），必须提供显式 `items` 数组，自动分配正整数 ID（1..N），最多支持 20 项。
+  - `update`：原子批量更新任务状态、标题或阻塞原因（必须提供正整数 ID，支持在一批操作中完成上一任务并启动下一任务）。
+  - `list`：查询当前待办事项列表。
+  - `clear`：清空待办列表。
+  - 声明 `outputSchema`：针对成功与失败调用均返回一致的 `structuredContent`（`{ items: [...], error?: string }`），便于代码模式（codemode）程序化读取。
+- **四种任务状态**：
+  - `pending`（[待办]）：缺省状态（仅在未指定 status 时缺省为 pending，严格拒绝空串、null、false）。
+  - `in_progress`（[进行中]）：全局最多只能有 1 项处于进行中。
+  - `completed`（[已完成]）
+  - `blocked`（[已阻塞]）：设置为阻塞时必须提供非空 `reason`（<=240 字符）；离开阻塞状态时自动清理历史原因；非阻塞任务上提供非法 reason 亦会被拒绝。
+- **终端交互与 TUI 挂件**：
+  - 挂件以组件工厂函数注册（`render(width: number)`），动态适应终端视口实际宽度，不采用固定字符宽度。
+  - 采用 `@earendil-works/pi-tui` 的 `truncateToWidth` 与 `visibleWidth` 处理多字节 CJK 与 Emoji 字符宽度截断。
+  - 编辑器上方展示 1 行摘要（如 `待办 2/5 完成 · 正在…`）加最多 3 行高优先级未完成事项（优先级：已阻塞 > 进行中 > 待办）。
+  - 任务全完成时自动折叠为单行摘要；待办为空时自动隐藏挂件。
+  - `/todos` 斜杠命令：弹出只读滚动列表对话框，展示所有任务 ID、中文状态标签与阻塞原因，按 ESC 退出。
+  - 终端安全过滤：去除 C0/C1 控制字符、OSC/DCS 序列、Unicode Bidi 控制符并折叠连续换行。
+- **快照持久化与上下文感知**：
+  - 状态通过 `pi.appendEntry('pi-todo-state', { version: 1, items: [...] })` 存储于会话树中。
+  - 会话启动 (`session_start`，支持 startup, new, reload, resume, fork 等原因) 与分支切换 (`session_tree`) 仅读取当前分支最新快照；空分支或最新快照非法安全重置为空并提供告警，不回退到旧快照。
+  - 上下文恢复 (`context`)：在对话压缩后自动向模型注入单条短时上下文消息（`customType: 'pi-todo-context'`），过滤旧历史，且仅在存在未完成任务时注入。
+
+## 工具调用示例
+
+### 1. 创建待办计划 (`set`)
+```json
+{
+  "action": "set",
+  "items": [
+    { "text": "搭建测试脚手架", "status": "in_progress" },
+    { "text": "实现核心逻辑", "status": "pending" },
+    { "text": "通过全量验证", "status": "pending" }
+  ]
+}
+```
+
+### 2. 更新任务进度 (`update`)
+```json
+{
+  "action": "update",
+  "updates": [
+    { "id": 1, "status": "completed" },
+    { "id": 2, "status": "in_progress" }
+  ]
+}
+```
+
+### 3. 清空待办计划 (`clear`)
+```json
+{
+  "action": "clear"
+}
+```
+
+## 安装与配置
+
+通过 Pi 安装到个人配置，然后在当前会话执行 `/reload`（或重新启动 Pi）：
+
+```bash
+pi install /public/scripts/pi-todo
+```
+
+安装器可能把本地目录记为相对于 `~/.pi/agent/settings.json` 的路径，这是正常行为。也可以在配置中使用：
+
+```json
+{
+  "packages": [
+    {
+      "source": "/public/scripts/pi-todo"
+    }
+  ]
+}
+```
+
+或者通过命令行单次加载：
+
+```bash
+pi --extension /public/scripts/pi-todo/index.ts
+```
+
+## 测试
+
+本项目使用 Node.js 内置测试运行器，支持自动推导本地 Pi 安装路径：
+
+```bash
+npm test
+```
+
+也可以显式指定主机依赖路径：
+
+```bash
+PI_TEST_HOST_ROOT="$HOME/.pi/agent/install/releases/1.3.0/node_modules" npm test
+```
+
+使用真实宿主 SDK 做离线验收（无需模型请求）：
+
+```bash
+node scripts/host-smoke.mjs
+```
+
+脚本覆盖宿主加载、真实工具包装、JSONL 会话写入、重新打开会话、树分支切换与上下文恢复。证据写入 `.work/`；交互终端的人工视觉检查另行进行。
+
+## 约束与常量
+
+- `MAX_ITEMS`: 20
+- `MAX_TEXT`: 160 字符
+- `MAX_REASON`: 240 字符
+- 任何非法输入（未知 ID、重复 ID、标题为空、阻塞缺少原因、多项进行中等）均保持操作的原子性：不修改内存状态、不产生持久化快照，并返回 `isError: true`。
