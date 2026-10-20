@@ -3,6 +3,8 @@ import type { TodoItem, TodoStatus } from "./state.ts";
 
 export { visibleWidth };
 
+export const MAX_WIDGET_ITEMS = 6;
+
 /**
  * Foreground theme tokens used by the todo UI. This is a subset of the host
  * `ThemeColor` tokens, so a host `Theme` satisfies `TodoTheme` structurally.
@@ -145,8 +147,15 @@ export function renderWidgetLines(
   const lines = [renderHeaderLine(items, maxWidth, theme, options.collapsed === true)];
   if (options.collapsed) return lines;
   const idWidth = Math.max(...items.map(item => String(item.id).length)) + 1;
-  for (const item of items) lines.push(...renderTaskLines(item, idWidth, maxWidth, theme));
-  lines.push(truncateText(rail(theme) + paint(theme, "dim", "/todos 查看详情"), maxWidth));
+  const priority: Record<TodoStatus, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3 };
+  const shown = [...items]
+    .sort((a, b) => priority[a.status] - priority[b.status] || a.id - b.id)
+    .slice(0, MAX_WIDGET_ITEMS)
+    .sort((a, b) => a.id - b.id);
+  for (const item of shown) lines.push(...renderTaskLines(item, idWidth, maxWidth, theme));
+  const hidden = items.length - shown.length;
+  const hint = hidden ? `另有 ${hidden} 项 · /todos 查看全部` : "/todos 查看详情";
+  lines.push(truncateText(rail(theme) + paint(theme, "dim", hint), maxWidth));
   return lines;
 }
 

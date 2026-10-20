@@ -247,7 +247,7 @@ test("branch restoration: session_start restores branch, empty branch clears sta
   assert.equal(mockCtx3.getWidgetContent(), undefined, "corrupt branch safely clears state/widget");
 });
 
-test("UI rendering: all tasks stay expanded in id order, including completed and long plans", async () => {
+test("UI rendering: long plans show at most six tasks, prioritizing active work in id order", async () => {
   const h = await createExtensionTestHarness();
   const mock = h.createMockContext();
   const run = params => h.tool.definition.execute("ui", params, undefined, undefined, mock.ctx);
@@ -256,15 +256,28 @@ test("UI rendering: all tasks stay expanded in id order, including completed and
   await run({action: "set", items: Array.from({length: 12}, (_, i) => ({text: `Task ${i+1}`, status: "completed"}))});
   let lines = mock.getWidgetContent(120);
   assert.match(lines[0], /12\/12 全部完成/);
-  assert.equal(lines.filter(l => /✓/.test(l)).length, 12);
+  assert.equal(lines.filter(l => /✓/.test(l)).length, 6);
   assert.match(lines[1], /#1  Task 1/);
-  assert.match(lines[12], /#12 Task 12/);
+  assert.match(lines.at(-1), /另有 6 项.*\/todos/);
   await run({action: "update", updates: [{id: 5, status: "blocked", reason: "等待接口"}]});
   lines = mock.getWidgetContent(120);
   assert.match(lines[0], /11\/12 完成 · 1 项受阻/);
   assert.match(lines[5], /✖ #5  Task 5/);
   assert.match(lines[6], /└ 等待接口/);
-  assert.match(lines[13], /✓ #12 Task 12/);
+  assert.equal(lines.filter(l => /#\d+/.test(l)).length, 6);
+  await run({action: "update", updates: [
+    {id: 12, status: "in_progress"},
+    ...[7, 8, 9, 10, 11].map(id => ({id, status: "pending"})),
+  ]});
+  lines = mock.getWidgetContent(120);
+  assert.deepEqual(lines.flatMap(l => [...l.matchAll(/#(\d+)/g)].map(m => Number(m[1]))), [5, 7, 8, 9, 10, 12]);
+  assert.match(lines.at(-1), /另有 6 项.*\/todos/);
+  const listed = await run({action: "list"});
+  assert.equal(listed.structuredContent.items.length, 12);
+  await run({action: "set", items: Array.from({length: 6}, (_, i) => ({text: `Short ${i}`}))});
+  lines = mock.getWidgetContent(120);
+  assert.equal(lines.filter(l => /#\d+/.test(l)).length, 6);
+  assert.doesNotMatch(lines.at(-1), /另有/);
 });
 
 test("Alt+T and /todos toggle only collapse presentation; updates preserve it and new plans reset it", async () => {
