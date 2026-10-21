@@ -1,0 +1,98 @@
+<div id="todo-prototype" aria-label="Todo 终端原型">
+  <style>
+    #todo-prototype{--todo-bg:light-dark(#fafaf8,#191c20);--todo-fg:light-dark(#242a32,#e1e5eb);--todo-dim:light-dark(#66717e,#929ca9);--todo-line:light-dark(#d9dfe5,#363d46);--todo-accent:light-dark(#006b88,#6acbe5);--todo-warn:light-dark(#955300,#efbb70);--todo-ok:light-dark(#32734c,#91c9a0);font:14px/1.7 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color:var(--todo-fg)}
+    #todo-prototype .terminal{background:var(--todo-bg);border:1px solid var(--todo-line);border-radius:8px;overflow:hidden}
+    #todo-prototype .chrome{padding:9px 18px;border-bottom:1px solid var(--todo-line);color:var(--todo-dim);font-size:12px;display:flex;justify-content:space-between;gap:12px}
+    #todo-prototype .body{padding:20px 18px 12px}
+    #todo-prototype .context{color:var(--todo-dim);margin-bottom:24px}
+    #todo-prototype .context strong{color:var(--todo-fg);font-weight:500}
+    #todo-prototype .summary{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:5px;color:var(--todo-dim)}
+    #todo-prototype .count{color:var(--todo-fg);font-weight:600}
+    #todo-prototype .widget[data-rail="true"]{border-left:1px solid var(--todo-line);padding-left:12px}
+    #todo-prototype .row{display:grid;grid-template-columns:18px 30px minmax(0,1fr);gap:6px;min-height:25px}
+    #todo-prototype .id,#todo-prototype .muted{color:var(--todo-dim)}
+    #todo-prototype .task{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #todo-prototype .active{color:var(--todo-accent);font-weight:700}
+    #todo-prototype .blocked{color:var(--todo-warn)}
+    #todo-prototype .done{color:var(--todo-ok)}
+    #todo-prototype .reason{padding-left:60px;color:var(--todo-warn);overflow-wrap:anywhere}
+    #todo-prototype .footer{color:var(--todo-dim);margin-top:5px;font-size:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    #todo-prototype button{font:inherit;color:var(--todo-dim);background:transparent;border:0;padding:0;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+    #todo-prototype button:focus-visible{outline:2px solid var(--todo-accent);outline-offset:3px}
+    #todo-prototype .input{border-top:1px solid var(--todo-accent);border-bottom:1px solid var(--todo-line);margin-top:16px;padding:12px 0;color:var(--todo-dim)}
+    #todo-prototype .status{font-size:12px;color:var(--todo-dim);padding-top:7px}
+    #todo-prototype .detail{border:1px solid var(--todo-line);padding:12px;margin-top:12px;background:var(--todo-bg)}
+    #todo-prototype .detail .task{white-space:normal;overflow-wrap:anywhere}
+    #todo-prototype .detail-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px}
+    #todo-prototype [hidden]{display:none}
+    @media(max-width:420px){#todo-prototype .body{padding:14px 10px 10px}#todo-prototype .chrome{padding:8px 10px}#todo-prototype{font-size:13px}}
+  </style>
+  <div class="terminal">
+    <div class="chrome"><span>pi · pi-todo</span><span>UI 提案 / 示例数据</span></div>
+    <div class="body">
+      <div class="context"><strong>› 优化 Todo 挂件的展示</strong><br><br>已核对现有布局，正在调整任务状态的视觉层级。</div>
+      <div class="widget" aria-live="polite"></div>
+      <div class="detail" hidden aria-label="完整待办列表">
+        <div class="detail-head"><strong>待办事项</strong><button type="button" class="close">Esc 关闭</button></div>
+        <div class="detail-list"></div>
+      </div>
+      <div class="input"><span class="active">›</span> 输入消息…</div>
+      <div class="status">pi-todo · main</div>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('todo-prototype');
+  const state = { version: 'proposal', scenario: 'blocked', collapsed: false, narrow: false, rail: true };
+  const tasks = ['核对现有渲染契约','确定状态与颜色层级','优化挂件布局','核对浅色主题效果','验证窄终端截断','补充使用说明','执行宿主验收','整理变更记录'];
+  let items = [];
+  const glyphs = {completed:'✓',in_progress:'◐',blocked:'✖',pending:'○'};
+  const classes = {completed:'done',in_progress:'active',blocked:'blocked',pending:'muted'};
+  function row(item, detail = false) {
+    const line = document.createElement('div');
+    line.className = 'row';
+    const glyph = document.createElement('span'); glyph.className = classes[item.status]; glyph.textContent = glyphs[item.status];
+    const id = document.createElement('span'); id.className = 'id'; id.textContent = '#' + item.id;
+    const task = document.createElement('span'); task.className = 'task ' + (item.status === 'in_progress' ? 'active' : item.status === 'completed' ? 'muted' : '');
+    task.textContent = item.text + (item.status === 'blocked' && state.version === 'current' && !detail ? ' · 等待浅色主题截图' : '');
+    line.append(glyph,id,task);
+    const fragment = document.createDocumentFragment(); fragment.append(line);
+    if(item.status === 'blocked' && (state.version === 'proposal' || detail)) { const reason = document.createElement('div'); reason.className='reason'; reason.textContent='└ 等待浅色主题截图'; fragment.append(reason); }
+    return fragment;
+  }
+  function render() {
+    root.style.maxWidth = state.narrow ? '390px' : '100%';
+    items = tasks.slice(0,state.scenario==='long'?8:6).map((text,i)=>({id:i+1,text,status:state.scenario==='done'?'completed':i<2?'completed':i===2?'in_progress':i===3&&state.scenario==='blocked'?'blocked':'pending'}));
+    if(state.scenario==='empty') items=[];
+    const widget=root.querySelector('.widget'); widget.replaceChildren(); widget.dataset.rail=String(state.rail);
+    const done=items.filter(x=>x.status==='completed').length;
+    const blocked=items.filter(x=>x.status==='blocked').length;
+    if(items.length) {
+      const header=document.createElement('div');header.className='summary';
+      const label=document.createElement('span');label.textContent=(state.collapsed?'▸':'▾')+' 待办';
+      const count=document.createElement('span');count.className='count';count.textContent=done+'/'+items.length+(done===items.length?' 全部完成':' 完成');header.append(label,count);
+      if(blocked && state.version==='proposal'){const warning=document.createElement('span');warning.className='blocked';warning.textContent='· '+blocked+' 项受阻';header.append(warning);}
+      const toggle=document.createElement('button');toggle.type='button';toggle.textContent='Alt+T '+(state.collapsed?'展开':'折叠');toggle.setAttribute('aria-expanded',String(!state.collapsed));toggle.onclick=()=>{state.collapsed=!state.collapsed;render();root.querySelector('.summary button')?.focus();};header.append(toggle);
+      widget.append(header);
+      const visible=state.collapsed?[]:items;
+      visible.forEach(x=>widget.append(row(x)));
+      const footer=document.createElement('div');footer.className='footer';
+      const open=document.createElement('button');open.type='button';open.textContent='/todos 查看详情';open.onclick=()=>{root.querySelector('.detail').hidden=false;root.querySelector('.close').focus();};footer.append(open);if(!state.collapsed)widget.append(footer);
+    }
+    root.querySelector('.detail-list').replaceChildren(...items.map(x=>row(x,true)));
+    root.querySelector('.detail').hidden=true;
+  }
+  root.querySelector('.close').onclick=()=>{root.querySelector('.detail').hidden=true;root.querySelector('.footer button')?.focus();};
+  root.tabIndex=0;
+  root.addEventListener('keydown',event=>{if(event.key==='Escape')root.querySelector('.close').click();if(event.altKey&&event.key.toLowerCase()==='t'){event.preventDefault();state.collapsed=!state.collapsed;render();root.focus();}});
+  render();
+  if(globalThis.Tweak){
+    const tweak=new Tweak({container:root,onChange:render});
+    tweak.addToggle(state,'rail',{label:'任务区左侧边界'});
+    tweak.addSelect(state,'scenario',{label:'任务状态',options:[{label:'有阻塞',value:'blocked'},{label:'正常推进',value:'normal'},{label:'较长计划',value:'long'},{label:'全部完成',value:'done'},{label:'空列表',value:'empty'}]});
+    tweak.addToggle(state,'collapsed',{label:'折叠整个列表'});
+    tweak.addToggle(state,'narrow',{label:'窄终端预览'});
+  }
+})();
+</script>
