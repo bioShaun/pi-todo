@@ -598,7 +598,7 @@ test("session_start restores normalized nonblocked reasons and rejects invalid b
     assert.equal(Object.hasOwn(res.structuredContent.items[0], "reason"), false);
     assert.equal(mock.notifications.some(n => n.type === "warning"), false);
   }
-  for (const reason of [undefined, "", " \t "]) {
+  for (const reason of [undefined, "", " \t ", 123, null]) {
     const item = { id: 1, text: "invalid blocked", status: "blocked" };
     if (reason !== undefined) item.reason = reason;
     const branch = [{ type: "custom", customType: "pi-todo-state", data: { version: 1, items: [item] } }];
@@ -606,7 +606,15 @@ test("session_start restores normalized nonblocked reasons and rejects invalid b
     await start({ type: "session_start", reason: "resume" }, mock.ctx);
     const res = await h.tool.definition.execute("rejected-restore", { action: "list" }, undefined, undefined, mock.ctx);
     assert.equal(res.structuredContent.items.length, 0);
-    assert.ok(mock.notifications.some(n => n.type === "warning"));
+    const warning = mock.notifications.find(n => n.type === "warning");
+    assert.ok(warning, `expected warning for reason=${JSON.stringify(reason)}`);
+    if (reason === undefined) {
+      assert.match(warning.msg, /missing non-blank reason/i);
+    } else if (typeof reason === "string") {
+      assert.match(warning.msg, /invalid reason: Blocked reason cannot be blank/i);
+    } else {
+      assert.match(warning.msg, /invalid reason: Blocked reason must be a string/i);
+    }
   }
 });
 

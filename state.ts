@@ -120,14 +120,18 @@ export function validateSnapshotItems(items: unknown): { valid: boolean; items?:
     }
 
     let reason: string | undefined;
+    const rawReason = (raw as Record<string, unknown>).reason;
     if (status === "blocked") {
-      const reasonRes = normalizeReason(status, (raw as Record<string, unknown>).reason);
+      const reasonRes = normalizeReason(status, rawReason);
       if (!reasonRes.valid || !reasonRes.reason) {
-        return { valid: false, error: `Item ${id} is blocked but missing non-blank reason` };
+        const detail = rawReason === undefined
+          ? "missing non-blank reason"
+          : `has invalid reason: ${reasonRes.error ?? "unknown error"}`;
+        return { valid: false, error: `Item ${id} is blocked but ${detail}` };
       }
       reason = reasonRes.reason;
-    } else if ((raw as Record<string, unknown>).reason !== undefined) {
-      const reasonRes = normalizeReason(status, (raw as Record<string, unknown>).reason);
+    } else if (rawReason !== undefined) {
+      const reasonRes = normalizeReason(status, rawReason);
       if (!reasonRes.valid) {
         return { valid: false, error: `Item ${id} has invalid reason: ${reasonRes.error}` };
       }
