@@ -34,7 +34,7 @@ export const TodoParamsSchema = Type.Object({
         Type.Literal("completed"),
         Type.Literal("blocked"),
       ], { description: "Initial status (defaults to pending); blocked requires reason" })),
-      reason: Type.Optional(Type.String({ description: "Reason why task is blocked (required if status is blocked, 1-240 chars)" })),
+      reason: Type.Optional(Type.String({ description: "Blocked status requires a nonblank reason (1-240 chars); blank reasons on nonblocked tasks are ignored" })),
     }),
     { description: "Array of items for 'set' action; replaces the entire existing plan" }
   )),
@@ -48,7 +48,7 @@ export const TodoParamsSchema = Type.Object({
         Type.Literal("blocked"),
       ], { description: "Updated status; blocked requires reason" })),
       text: Type.Optional(Type.String({ description: "Updated task description (1-160 chars)" })),
-      reason: Type.Optional(Type.String({ description: "Reason why task is blocked (required if status is blocked, 1-240 chars)" })),
+      reason: Type.Optional(Type.String({ description: "Blocked status requires a nonblank reason (1-240 chars); blank reasons on nonblocked tasks are ignored" })),
     }),
     { description: "Array of updates for 'update' action; modifies tasks by positive integer id" }
   )),
