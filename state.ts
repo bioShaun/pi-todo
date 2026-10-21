@@ -2,7 +2,7 @@ export const MAX_ITEMS = 20;
 export const MAX_TEXT = 160;
 export const MAX_REASON = 240;
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "blocked";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled" | "blocked";
 
 export interface TodoItem {
   id: number;
@@ -32,10 +32,41 @@ export interface TodoUpdateItemInput {
 export interface TodoMutationResult {
   success: boolean;
   error?: string;
+  errors?: string[];
 }
 
 function clone<T>(val: T): T {
   return JSON.parse(JSON.stringify(val));
+}
+
+/** Checks whether two todo item lists are identical in IDs, text, status, and reason. */
+export function areTodoItemsEqual(a: readonly TodoItem[], b: readonly TodoItem[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    const itemA = a[i];
+    const itemB = b[i];
+    if (
+      itemA.id !== itemB.id ||
+      itemA.text !== itemB.text ||
+      itemA.status !== itemB.status ||
+      itemA.reason !== itemB.reason
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function failure(errors: string[]): TodoMutationResult {
+  return {
+    success: false,
+    error: errors.length === 1
+      ? errors[0]
+      : `Validation failed with ${errors.length} errors: ${errors.join("; ")}`,
+    errors,
+  };
 }
 
 export function isValidStatus(status: unknown): status is TodoStatus {
@@ -43,6 +74,7 @@ export function isValidStatus(status: unknown): status is TodoStatus {
     status === "pending" ||
     status === "in_progress" ||
     status === "completed" ||
+    status === "cancelled" ||
     status === "blocked"
   );
 }
@@ -82,75 +114,104 @@ function normalizeReason(status: TodoStatus, reason: unknown): { valid: boolean;
   return result.valid ? { valid: true } : result;
 }
 
-export function validateSnapshotItems(items: unknown): { valid: boolean; items?: TodoItem[]; error?: string } {
+export function validateSnapshotItems(
+  items: unknown
+): { valid: boolean; items?: TodoItem[]; error?: string; errors?: string[] } {
   if (!Array.isArray(items)) {
-    return { valid: false, error: "Items must be an array" };
+    const error = "Items must be an array";
+    return { valid: false, error, errors: [error] };
   }
   if (items.length > MAX_ITEMS) {
-    return { valid: false, error: `Todo list cannot exceed ${MAX_ITEMS} items` };
+    const error = `Todo list cannot exceed ${MAX_ITEMS} items`;
+    return { valid: false, error, errors: [error] };
   }
 
   const result: TodoItem[] = [];
   const seenIds = new Set<number>();
-  let inProgressCount = 0;
+  const errors: string[] = [];
 
   for (let i = 0; i < items.length; i++) {
     const raw = items[i];
     if (!raw || typeof raw !== "object") {
-      return { valid: false, error: `Item at index ${i} is malformed` };
+      errors.push(`Item at index ${i} is malformed`);
+      continue;
     }
 
-    const id = (raw as Record<string, unknown>).id;
-    if (typeof id !== "number" || !Number.isInteger(id) || id !== i + 1) {
-      return { valid: false, error: `Item at index ${i} must have sequential id ${i + 1}` };
-    }
-    if (seenIds.has(id)) {
-      return { valid: false, error: `Duplicate item id ${id}` };
-    }
-    seenIds.add(id);
+    const record = raw as Record<string, unknown>;
+    const errorStart = errors.length;
+    const rawId = record.id;
+    let id: number | undefined;
+    let label = `Item at index ${i}`;
 
-    const textRes = validateItemText((raw as Record<string, unknown>).text);
+    if (typeof rawId === "number" && Number.isInteger(rawId) && rawId === i + 1) {
+      id = rawId;
+      label = `Item ${rawId}`;
+      if (seenIds.has(rawId)) {
+        errors.push(`Duplicate item id ${rawId}`);
+      } else {
+        seenIds.add(rawId);
+      }
+    } else {
+      errors.push(`Item at index ${i} must have sequential id ${i + 1}`);
+    }
+
+    const textRes = validateItemText(record.text);
     if (!textRes.valid || !textRes.text) {
-      return { valid: false, error: textRes.error || `Item ${id} text is invalid` };
+      errors.push(`${label}: ${textRes.error || "text is invalid"}`);
     }
 
-    const status = (raw as Record<string, unknown>).status;
-    if (!isValidStatus(status)) {
-      return { valid: false, error: `Item ${id} has invalid status '${String(status)}'` };
-    }
+    const rawStatus = record.status;
+    let status: TodoStatus | undefined;
+    if (!isValidStatus(rawStatus)) {
+      errors.push(`${label} has invalid status '${String(rawStatus)}'`);
+    } else {
+      status = rawStatus;
+      let reason: string | undefined;
+      const rawReason = record.reason;
 
-    let reason: string | undefined;
-    const rawReason = (raw as Record<string, unknown>).reason;
-    if (status === "blocked") {
-      const reasonRes = normalizeReason(status, rawReason);
-      if (!reasonRes.valid || !reasonRes.reason) {
-        const detail = rawReason === undefined
-          ? "missing non-blank reason"
-          : `has invalid reason: ${reasonRes.error ?? "unknown error"}`;
-        return { valid: false, error: `Item ${id} is blocked but ${detail}` };
+      if (status === "blocked") {
+        const reasonRes = normalizeReason(status, rawReason);
+        if (!reasonRes.valid || !reasonRes.reason) {
+          const detail = rawReason === undefined
+            ? "missing non-blank reason"
+            : `has invalid reason: ${reasonRes.error ?? "unknown error"}`;
+          errors.push(`${label} is blocked but ${detail}`);
+        } else {
+          reason = reasonRes.reason;
+        }
+      } else if (rawReason !== undefined) {
+        const reasonRes = normalizeReason(status, rawReason);
+        if (!reasonRes.valid) {
+          errors.push(`${label} has invalid reason: ${reasonRes.error}`);
+        }
       }
-      reason = reasonRes.reason;
-    } else if (rawReason !== undefined) {
-      const reasonRes = normalizeReason(status, rawReason);
-      if (!reasonRes.valid) {
-        return { valid: false, error: `Item ${id} has invalid reason: ${reasonRes.error}` };
+
+      if (errors.length === errorStart && id !== undefined && textRes.text) {
+        result.push({
+          id,
+          text: textRes.text,
+          status,
+          ...(reason ? { reason } : {}),
+        });
       }
     }
-
-    if (status === "in_progress") {
-      inProgressCount++;
-    }
-
-    result.push({
-      id,
-      text: textRes.text,
-      status,
-      ...(reason ? { reason } : {}),
-    });
   }
 
-  if (inProgressCount > 1) {
-    return { valid: false, error: "At most one task can be in_progress at a time" };
+  if (errors.length > 0) {
+    return {
+      valid: false,
+      error: errors.length === 1
+        ? errors[0]
+        : `Validation failed with ${errors.length} errors: ${errors.join("; ")}`,
+      errors,
+    };
+  }
+
+  const inProgress = result.filter((item) => item.status === "in_progress");
+  if (inProgress.length > 1) {
+    const ids = inProgress.map((item) => `#${item.id}`).join(", ");
+    const error = `At most one task can be in_progress at a time (found ${inProgress.length}: ${ids})`;
+    return { valid: false, error, errors: [error] };
   }
 
   return { valid: true, items: result };
@@ -169,6 +230,10 @@ export class TodoStateManager {
   }
 
   private commitState(candidate: TodoItem[]): TodoMutationResult {
+    if (areTodoItemsEqual(this.items, candidate)) {
+      return { success: true };
+    }
+
     const snapshot: TodoStateSnapshot = {
       version: 1,
       items: clone(candidate),
@@ -179,7 +244,7 @@ export class TodoStateManager {
         this.appendEntryFn("pi-todo-state", snapshot);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        return { success: false, error: `Persistence error: ${message}` };
+        return failure([`Persistence error: ${message}`]);
       }
     }
 
@@ -189,10 +254,10 @@ export class TodoStateManager {
 
   public set(rawItems: TodoSetItemInput[]): TodoMutationResult {
     if (!Array.isArray(rawItems)) {
-      return { success: false, error: "Items must be an array" };
+      return failure(["Items must be an array"]);
     }
     if (rawItems.length > MAX_ITEMS) {
-      return { success: false, error: `Cannot set more than ${MAX_ITEMS} items` };
+      return failure([`Cannot set more than ${MAX_ITEMS} items`]);
     }
 
     if (rawItems.length === 0) {
@@ -200,49 +265,59 @@ export class TodoStateManager {
     }
 
     const candidate: TodoItem[] = [];
-    let inProgressCount = 0;
+    const errors: string[] = [];
 
     for (let i = 0; i < rawItems.length; i++) {
       const raw = rawItems[i];
+      const label = `Item ${i + 1}`;
       if (!raw || typeof raw !== "object") {
-        return { success: false, error: `Item at index ${i} is malformed` };
+        errors.push(`Item at index ${i} is malformed`);
+        continue;
       }
 
+      const errorStart = errors.length;
       const textRes = validateItemText(raw.text);
-      if (!textRes.valid || !textRes.text) {
-        return { success: false, error: textRes.error };
+      const text = textRes.text;
+      if (!textRes.valid || !text) {
+        errors.push(`${label}: ${textRes.error || "text is invalid"}`);
       }
 
       const status = raw.status === undefined ? "pending" : raw.status;
       if (!isValidStatus(status)) {
-        return { success: false, error: `Invalid status '${String(status)}'` };
+        errors.push(`${label} has invalid status '${String(status)}'`);
+        continue;
       }
 
       let reason: string | undefined;
       if (raw.reason !== undefined) {
         const reasonRes = normalizeReason(status, raw.reason);
         if (!reasonRes.valid) {
-          return { success: false, error: reasonRes.error || "Invalid reason" };
+          errors.push(`${label}: ${reasonRes.error || "Invalid reason"}`);
+        } else {
+          reason = reasonRes.reason;
         }
-        reason = reasonRes.reason;
       } else if (status === "blocked") {
-        return { success: false, error: "Blocked status requires a reason" };
+        errors.push(`${label}: Blocked status requires a reason`);
       }
 
-      if (status === "in_progress") {
-        inProgressCount++;
+      if (errors.length === errorStart && text) {
+        candidate.push({
+          id: i + 1,
+          text,
+          status,
+          ...(reason ? { reason } : {}),
+        });
       }
-
-      candidate.push({
-        id: i + 1,
-        text: textRes.text,
-        status,
-        ...(reason ? { reason } : {}),
-      });
     }
 
-    if (inProgressCount > 1) {
-      return { success: false, error: "At most one task can be in_progress at a time" };
+    if (errors.length > 0) {
+      return failure(errors);
+    }
+
+    const inProgress = candidate.filter((item) => item.status === "in_progress");
+    if (inProgress.length > 1) {
+      const ids = inProgress.map((item) => `#${item.id}`).join(", ");
+      return failure([`At most one task can be in_progress at a time (found ${inProgress.length}: ${ids})`]);
     }
 
     return this.commitState(candidate);
@@ -250,56 +325,72 @@ export class TodoStateManager {
 
   public update(updates: TodoUpdateItemInput[]): TodoMutationResult {
     if (!Array.isArray(updates) || updates.length === 0) {
-      return { success: false, error: "Updates array cannot be empty" };
+      return failure(["Updates array cannot be empty"]);
     }
 
+    const envelopeErrors: string[] = [];
     const seenIds = new Set<number>();
-    for (const u of updates) {
+    for (let i = 0; i < updates.length; i++) {
+      const u = updates[i];
       if (!u || typeof u !== "object" || typeof u.id !== "number" || !Number.isInteger(u.id) || u.id <= 0) {
-        return { success: false, error: "Each update must include a positive integer id" };
+        envelopeErrors.push(`Update at index ${i} must include a positive integer id`);
+        continue;
       }
       if (seenIds.has(u.id)) {
-        return { success: false, error: `Duplicate update for task id ${u.id}` };
+        envelopeErrors.push(`Duplicate update for task id ${u.id}`);
+      } else {
+        seenIds.add(u.id);
       }
-      seenIds.add(u.id);
+    }
+    if (envelopeErrors.length > 0) {
+      return failure(envelopeErrors);
     }
 
     const candidate = clone(this.items);
+    const errors: string[] = [];
 
     for (const u of updates) {
       const idx = candidate.findIndex((item) => item.id === u.id);
       if (idx === -1) {
-        return { success: false, error: `Unknown task id ${u.id}` };
+        errors.push(`Unknown task id ${u.id}`);
+        continue;
       }
 
       const current = candidate[idx];
+      const updateErrors: string[] = [];
+
       let newText = current.text;
       if (u.text !== undefined) {
         const textRes = validateItemText(u.text);
         if (!textRes.valid || !textRes.text) {
-          return { success: false, error: textRes.error };
+          updateErrors.push(textRes.error || "text is invalid");
+        } else {
+          newText = textRes.text;
         }
-        newText = textRes.text;
       }
 
       const newStatus = u.status !== undefined ? u.status : current.status;
-      if (!isValidStatus(newStatus)) {
-        return { success: false, error: `Invalid status '${String(newStatus)}'` };
-      }
-
       let newReason: string | undefined;
-      if (u.reason !== undefined) {
+      if (!isValidStatus(newStatus)) {
+        updateErrors.push(`Invalid status '${String(newStatus)}'`);
+      } else if (u.reason !== undefined) {
         const reasonRes = normalizeReason(newStatus, u.reason);
         if (!reasonRes.valid) {
-          return { success: false, error: reasonRes.error || "Invalid reason" };
+          updateErrors.push(reasonRes.error || "Invalid reason");
+        } else {
+          newReason = reasonRes.reason;
         }
-        newReason = reasonRes.reason;
       } else if (newStatus === "blocked") {
         if (current.status === "blocked" && current.reason) {
           newReason = current.reason;
         } else {
-          return { success: false, error: `Task ${u.id} cannot be marked blocked without a reason` };
+          updateErrors.push("Cannot mark blocked without a reason");
         }
+      }
+
+      if (updateErrors.length > 0) {
+        errors.push(...updateErrors.map((msg) => `Task ${u.id}: ${msg}`));
+        continue;
       }
 
       candidate[idx] = {
@@ -310,9 +401,14 @@ export class TodoStateManager {
       };
     }
 
-    const inProgressCount = candidate.filter((i) => i.status === "in_progress").length;
-    if (inProgressCount > 1) {
-      return { success: false, error: "At most one task can be in_progress at a time" };
+    if (errors.length > 0) {
+      return failure(errors);
+    }
+
+    const inProgress = candidate.filter((item) => item.status === "in_progress");
+    if (inProgress.length > 1) {
+      const ids = inProgress.map((item) => `#${item.id}`).join(", ");
+      return failure([`At most one task can be in_progress at a time (found ${inProgress.length}: ${ids})`]);
     }
 
     return this.commitState(candidate);

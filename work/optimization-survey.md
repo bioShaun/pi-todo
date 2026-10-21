@@ -2,6 +2,8 @@
 
 2026-10-21 调研。对比主流 todo 工具的优点，评估哪些适合移植到 pi-todo。
 
+**实施状态（2026-10-21）**：第 1–3 项已落地（批量错误聚合、`cancelled` 状态、no-op 不持久化）；下列“现状”保留为调研时的基线，第 4–6 项仍为候选。
+
 ## 主流工具的优点对照
 
 ### 面向人的 CLI 工具
@@ -47,7 +49,7 @@ pi-todo 在 agent todo 工具里已经偏强，具备多数工具没有的能力
 
 **现状**：`update` 无实际变化仍调用 `commitState` 追加 `pi-todo-state` 条目；内容相同的 `set` 同理。context 快照已按 items 比对去重，但 state entry 没有。
 
-**做法**：`commitState` 前复用与 `context.ts` 相同的列表相等判断比较 candidate 与当前 items（建议把 helper 下沉到 `state.ts`，避免 state 层反向依赖 context 层），相同则跳过 `appendEntryFn`（仍返回 success）。注意区分"持久化失败"与"无需持久化"，前者仍须报错。
+**做法**：`commitState` 前用列表相等判断比较 candidate 与当前 items（本次实现已将 helper 下沉到 `state.ts`，避免 state 层反向依赖 context 层），相同则跳过 `appendEntryFn`（仍返回 success）。注意区分"持久化失败"与"无需持久化"，前者仍须报错。
 
 **收益**：减少 session JSONL 冗余条目。**成本**：极低。
 

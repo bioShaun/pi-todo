@@ -1,10 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { matchesKey } from "@earendil-works/pi-tui";
-import { TodoStateManager, type TodoItem } from "./state.ts";
+import { TodoStateManager, areTodoItemsEqual, type TodoItem } from "./state.ts";
 import {
   formatTodoContextContent,
-  areTodoItemsEqual,
   getLatestTodoContextContent,
   shouldAppendContextSnapshot,
   TODO_CONTEXT_TYPE,
@@ -32,8 +31,9 @@ export const TodoParamsSchema = Type.Object({
         Type.Literal("pending"),
         Type.Literal("in_progress"),
         Type.Literal("completed"),
+        Type.Literal("cancelled"),
         Type.Literal("blocked"),
-      ], { description: "Initial status (defaults to pending); blocked requires reason" })),
+      ], { description: "Initial status (defaults to pending); blocked requires reason; cancelled records dropped work" })),
       reason: Type.Optional(Type.String({ description: "Blocked status requires a nonblank reason (1-240 chars); blank reasons on nonblocked tasks are ignored" })),
     }),
     { description: "Array of items for 'set' action; replaces the entire existing plan" }
@@ -45,8 +45,9 @@ export const TodoParamsSchema = Type.Object({
         Type.Literal("pending"),
         Type.Literal("in_progress"),
         Type.Literal("completed"),
+        Type.Literal("cancelled"),
         Type.Literal("blocked"),
-      ], { description: "Updated status; blocked requires reason" })),
+      ], { description: "Updated status; blocked requires reason; cancelled records dropped work" })),
       text: Type.Optional(Type.String({ description: "Updated task description (1-160 chars)" })),
       reason: Type.Optional(Type.String({ description: "Blocked status requires a nonblank reason (1-240 chars); blank reasons on nonblocked tasks are ignored" })),
     }),
@@ -65,13 +66,17 @@ export const TodoOutputSchema = Type.Object({
         Type.Literal("pending"),
         Type.Literal("in_progress"),
         Type.Literal("completed"),
+        Type.Literal("cancelled"),
         Type.Literal("blocked"),
       ], { description: "Task status" }),
       reason: Type.Optional(Type.String({ description: "Reason when task is blocked" })),
     }),
     { description: "Current list of todo items" }
   ),
-  error: Type.Optional(Type.String({ description: "Error message when action fails" })),
+  error: Type.Optional(Type.String({ description: "Summary error message when action fails" })),
+  errors: Type.Optional(Type.Array(Type.String({ description: "Individual validation error" }), {
+    description: "All independent validation errors collected in this batch",
+  })),
 });
 
 export type TodoOutput = Static<typeof TodoOutputSchema>;
@@ -80,15 +85,16 @@ export interface TodoExecutionResult {
   isError?: boolean;
   content: Array<{ type: "text"; text: string }>;
   structuredContent: TodoOutput;
-  details: { items: TodoItem[]; error?: string };
+  details: { items: TodoItem[]; error?: string; errors?: string[] };
 }
 
-function makeError(items: TodoItem[], error: string): TodoExecutionResult {
+function makeError(items: TodoItem[], error: string, errors?: string[]): TodoExecutionResult {
+  const allErrors = errors && errors.length > 0 ? errors : [error];
   return {
     isError: true,
     content: [{ type: "text", text: error }],
-    structuredContent: { items, error },
-    details: { items, error },
+    structuredContent: { items, error, errors: allErrors },
+    details: { items, error, errors: allErrors },
   };
 }
 
@@ -106,7 +112,7 @@ function handleSet(stateManager: TodoStateManager, params: TodoParams): TodoExec
   }
   const res = stateManager.set(params.items);
   if (!res.success) {
-    return makeError(stateManager.getItems(), res.error || "Failed to set todos");
+    return makeError(stateManager.getItems(), res.error || "Failed to set todos", res.errors);
   }
   return makeSuccess(stateManager.getItems(), formatToolSummary(stateManager.getItems()));
 }
@@ -117,7 +123,7 @@ function handleUpdate(stateManager: TodoStateManager, params: TodoParams): TodoE
   }
   const res = stateManager.update(params.updates);
   if (!res.success) {
-    return makeError(stateManager.getItems(), res.error || "Failed to update todos");
+    return makeError(stateManager.getItems(), res.error || "Failed to update todos", res.errors);
   }
   return makeSuccess(stateManager.getItems(), formatToolSummary(stateManager.getItems()));
 }
@@ -125,7 +131,7 @@ function handleUpdate(stateManager: TodoStateManager, params: TodoParams): TodoE
 function handleClear(stateManager: TodoStateManager): TodoExecutionResult {
   const res = stateManager.clear();
   if (!res.success) {
-    return makeError(stateManager.getItems(), res.error || "Failed to clear todos");
+    return makeError(stateManager.getItems(), res.error || "Failed to clear todos", res.errors);
   }
   return makeSuccess([], "Todo list cleared.");
 }
@@ -203,6 +209,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use a short 3-6 step plan for multi-step work; skip todos for simple questions or one-step tasks.",
       "Update statuses explicitly at milestones; at most one task in_progress; blocked requires a reason.",
+      "Mark dropped work cancelled instead of deleting or renumbering the plan; completed means actually done.",
       "Delegated implementation is not verified completion: mark completed only after checking the required evidence.",
       "Replace or clear the plan when switching to an unrelated task.",
     ],
