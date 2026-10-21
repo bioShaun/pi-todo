@@ -7,10 +7,10 @@
 
 ### 1. Source Structure
 - `index.ts`: Entrypoint registering the `todo` tool (with `outputSchema` and `structuredContent`), `/todos` slash command, dynamic widget factory (`render(width)`), and lifecycle listeners (`session_start`, `session_tree`, `session_compact`).
-- `context.ts`: Context snapshot formatting, list equality checks, projection latest snapshot extraction, and branch/compaction recovery logic.
-- `state.ts`: Core data model (`TodoItem`, `TodoStateSnapshot`), validation functions, immutable cloning, atomic mutations, and session branch restoration logic.
+- `context.ts`: Context snapshot formatting, projection latest snapshot extraction, and branch/compaction recovery logic.
+- `state.ts`: Core data model (`TodoItem`, `TodoStateSnapshot`), validation functions with batch error aggregation, list equality checks, immutable cloning, atomic mutations, and session branch restoration logic.
 - `view.ts`: Status label mapping, terminal string sanitization (C0/C1 controls, OSC/DCS/APC sequences, bidi controls, collapsed newlines), actual-width truncation (`truncateToWidth`, `visibleWidth` from `@earendil-works/pi-tui`), and theme-aware widget/dialog rendering. Widget components implement `render(width)` and `invalidate()`.
-  - `renderWidgetLines(items, width, theme?, options?)` renders a text-only progress header, at most 6 tasks, and a details hint with the hidden count. Priorities are in progress > blocked > pending > completed, with lower IDs selected first within each status; selected tasks display in ID order. `options.collapsed` shows only the summary. All lines are truncated to the given width.
+  - `renderWidgetLines(items, width, theme?, options?)` renders a text-only progress header, at most 6 tasks, and a details hint with the hidden count. Priorities are in progress > blocked > pending > completed > cancelled, with lower IDs selected first within each status; selected tasks display in ID order. Cancelled tasks are dim and counted separately in the header. `options.collapsed` shows only the summary. All lines are truncated to the given width.
   - `formatTodoDialogTitle(items)` / `formatTodoDialogOptions(items)` produce the `/todos` select title (with progress counts) and option rows.
   - `STATUS_LABELS` stays model-facing (`formatTodoList`, tool text); the widget and dialog use `STATUS_GLYPHS`.
 - `scripts/host-smoke.mjs`: Offline actual-host SDK validation of loading, wrapped tools, JSONL persistence, fresh-session restore, tree navigation and context. Run `node scripts/host-smoke.mjs`; no model requests are made, evidence stays under `.work/`.
@@ -21,12 +21,13 @@ The tool is registered with `executionMode: "sequential"` and requires schema pa
 - `items`: (For `set`) Required explicit array of `{ text: string, status?: TodoStatus, reason?: string }`
   - Replaces entire existing plan; assigns positive integer IDs 1..N sequentially.
 - `updates`: (For `update`) Array of `{ id: number, status?: TodoStatus, text?: string, reason?: string }`
-  - Atomic batch execution: validates all updates before applying or persisting.
+  - Atomic batch execution: validates all updates before applying or persisting and returns every independent validation error in one response.
+- `TodoStatus` is `pending | in_progress | completed | cancelled | blocked`. `cancelled` keeps the task and ID for audit while closing it.
 - `list`: Returns the current todo list without mutations.
 - `clear`: Empties the todo list and persists an empty snapshot.
 
 #### Structured Output (`outputSchema`)
-All results return `structuredContent` matching `{ items: TodoItem[], error?: string }` alongside text content and `details`.
+All results return `structuredContent` matching `{ items: TodoItem[], error?: string, errors?: string[] }` alongside text content and `details`. On failure, `errors` contains every independent validation error and `error` is the summary string models see in text content.
 
 #### Tool Invocation Examples
 - **set**:
@@ -65,13 +66,14 @@ All results return `structuredContent` matching `{ items: TodoItem[], error?: st
 
 ### 4. Persistence & Branch State
 - Stored as versioned custom session entries via `pi.appendEntry('pi-todo-state', { version: 1, items: [...] })`.
+- No-op mutations (identical `set`, field-less or unchanged `update`, clearing an empty list) return success without appending a state entry. `commitState` compares the candidate against current items using `areTodoItemsEqual` from `state.ts`; a real persistence failure still errors.
 - On `session_start` and `session_tree`, state is restored exclusively from the latest custom entry in `ctx.sessionManager.getBranch()`. Restored IDs must follow the original `1..N` array order; gaps, reordered IDs, and out-of-range IDs invalidate the snapshot.
 - An empty branch resets state to empty. Corrupted latest entries trigger a warning notification and reset state to empty (without falling back to older snapshots).
 
 ### 5. Persistent Context Snapshots & Prompt Cache Preservation
 - The extension does NOT register a `context` hook and never rewrites or filters historical session messages.
 - After state persistence succeeds on state-changing `set`, `update`, and `clear` operations, the tool calls `pi.sendMessage` to append a persistent hidden message (`customType: "pi-todo-context"`, `content: JSON.stringify({ todos: items })`, `display: false`, `{ triggerTurn: false }`).
-- When all tasks are completed or when cleared, it appends a snapshot with `{ todos: [] }` to update model context semantics without modifying history.
+- When all tasks are completed, all are cancelled, or the list is cleared, it appends a snapshot with `{ todos: [] }` to update model context semantics without modifying history. While any task remains open, the snapshot keeps the full plan, including completed/cancelled items, as an audit trail.
 - Context contents contain no volatile timestamps (using host session entry timestamps).
 - On `session_start` and `session_tree`, after restoring branch state, it inspects the compaction-aware projection (`buildSessionProjection().messages`); if the latest snapshot differs from the current branch or is missing, it appends a recovery snapshot. If there are no tasks and no previous snapshot in the projection, nothing is appended. Recovery does not duplicate an identical projected snapshot.
 - On `session_compact`, if compaction removed the latest snapshot, a recovery snapshot is appended once. For `willRetry: true` (overflow recovery), it delivers via steering (`triggerTurn: true, deliverAs: "steer"`); otherwise `{ triggerTurn: false }`.
@@ -81,7 +83,7 @@ All results return `structuredContent` matching `{ items: TodoItem[], error?: st
 The 2026-10-20 fix (`c634801`) removed a `context` hook that filtered all old todo snapshots and appended a transient snapshot at the end of every request. Even unchanged snapshot content moved past newly added assistant/tool messages, breaking the previous request's message prefix. Never reintroduce this pattern. See README's “已知陷阱：临时快照移动导致缓存反复失效” for the incident data and online acceptance procedure.
 
 - Preserve historical message positions. In Pi 1.3.0, streaming `sendMessage(..., { triggerTurn: false })` queues custom messages until `turn_end`, after all tool results. Never insert a snapshot between an assistant tool call and its tool result, including nested codemode execution.
-- Detect tool changes by comparing items before/after successful persistence. `list`, validation/persistence failures, and no-ops must not append a context snapshot.
+- Detect tool changes by comparing items before/after successful persistence. `list`, validation/persistence failures, and no-ops must not append a state entry or context snapshot.
 - Queue every actual state change, including both B and the final A in a same-turn `A → B → A` sequence. The persistent projection does not yet include pending custom messages; using it for tool-change deduplication can silently discard the final A. Projection-based deduplication is for lifecycle recovery.
 - Preserve empty snapshots for all-completed/cleared plans, branch-aware restoration, compaction-aware projection checks, and `willRetry: true` steering so the retry consumes the recovered snapshot. Other recovery must not start an extra model turn.
 - Minimum regression checks after context changes: `npm test` (`tests/context.test.mjs`) and `node scripts/host-smoke.mjs`. Keep real host message conversion prefix assertions, same-turn `A → B → A`, tool-result/snapshot ordering, session reload/tree recovery, manual compaction, retry steering consumption, and recovery deduplication. Implementation lives in `index.ts` and `context.ts`.
@@ -94,8 +96,9 @@ The 2026-10-20 fix (`c634801`) removed a `context` hook that filtered all old to
 - `MAX_TEXT`: 160 characters maximum per task text (trimmed, non-blank).
 - `MAX_REASON`: 240 characters maximum per blocked reason (trimmed, required when status is `blocked`, validated on all items).
 - For nonblocked effective status, omitted reason is valid and supplied blank/whitespace-only strings normalize to absent; supplied nonblank strings are validated then discarded. Wrong types and overlong nonblank strings remain invalid. Blocked reasons remain strict: blank values reject, entering blocked requires a nonblank reason, omitted reason on an already-blocked update preserves it, and leaving blocked clears it.
+- `cancelled` is a closed, nonblocking status: it keeps the task ID and audit trail, does not count toward `in_progress`, and is included in the full context snapshot while other work is open.
 - `in_progress` concurrency: At most 1 task may be `in_progress` at any time.
-- All validation errors return `{ isError: true, content: [...], structuredContent: { items, error } }` without mutating memory or appending session entries.
+- All validation errors return `{ isError: true, content: [...], structuredContent: { items, error, errors } }` without mutating memory or appending session entries. `errors` aggregates every independent failure; global constraints (item count, in_progress concurrency) remain single errors.
 
 ## Testing & Validation
 Run tests with Node.js built-in test runner:

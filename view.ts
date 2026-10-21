@@ -25,6 +25,7 @@ export const STATUS_LABELS: Record<TodoStatus, string> = {
   pending: "[待办]",
   in_progress: "[进行中]",
   completed: "[已完成]",
+  cancelled: "[已取消]",
   blocked: "[已阻塞]",
 };
 
@@ -33,6 +34,7 @@ export const STATUS_GLYPHS: Record<TodoStatus, string> = {
   pending: "○",
   in_progress: "◐",
   completed: "✓",
+  cancelled: "⊘",
   blocked: "✖",
 };
 
@@ -40,6 +42,7 @@ const STATUS_TOKENS: Record<TodoStatus, TodoThemeToken> = {
   pending: "muted",
   in_progress: "accent",
   completed: "success",
+  cancelled: "dim",
   blocked: "warning",
 };
 
@@ -107,10 +110,12 @@ function rail(theme?: TodoTheme): string {
 function renderHeaderLine(items: TodoItem[], maxWidth: number, theme: TodoTheme | undefined, collapsed: boolean): string {
   const completed = items.filter(item => item.status === "completed").length;
   const blocked = items.filter(item => item.status === "blocked").length;
+  const cancelled = items.filter(item => item.status === "cancelled").length;
   const summary = `${completed}/${items.length} ${completed === items.length ? "全部完成" : "完成"}`;
   const line = rail(theme) + paint(theme, "muted", `${collapsed ? "▸" : "▾"} 待办 `)
     + paintBold(theme, paint(theme, completed === items.length ? "success" : "accent", summary))
-    + (blocked ? paint(theme, "warning", ` · ${blocked} 项受阻`) : "");
+    + (blocked ? paint(theme, "warning", ` · ${blocked} 项受阻`) : "")
+    + (cancelled ? paint(theme, "dim", ` · ${cancelled} 项取消`) : "");
   const hint = ` · Alt+T ${collapsed ? "展开" : "折叠"}`;
   // Preserve counts and warnings before the optional keyboard hint.
   return truncateText(line + (visibleWidth(line + hint) <= maxWidth ? paint(theme, "dim", hint) : ""), maxWidth);
@@ -122,7 +127,8 @@ function renderTaskLines(item: TodoItem, idWidth: number, maxWidth: number, them
   const indent = rail(theme) + " ".repeat(idWidth + 3);
   const style = (text: string): string => item.status === "in_progress"
     ? paintBold(theme, paint(theme, "accent", text))
-    : item.status === "completed" ? paint(theme, "muted", text) : text;
+    : item.status === "completed" ? paint(theme, "muted", text)
+      : item.status === "cancelled" ? paint(theme, "dim", text) : text;
   const title = sanitizeText(item.text);
   const chunks = wrap ? wrapTextWithAnsi(title, Math.max(1, maxWidth - visibleWidth(prefix))) : [title];
   const lines = chunks.map((chunk, i) => truncateText((i ? indent : prefix) + style(chunk), maxWidth));
@@ -147,7 +153,7 @@ export function renderWidgetLines(
   const lines = [renderHeaderLine(items, maxWidth, theme, options.collapsed === true)];
   if (options.collapsed) return lines;
   const idWidth = Math.max(...items.map(item => String(item.id).length)) + 1;
-  const priority: Record<TodoStatus, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3 };
+  const priority: Record<TodoStatus, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3, cancelled: 4 };
   const shown = [...items]
     .sort((a, b) => priority[a.status] - priority[b.status] || a.id - b.id)
     .slice(0, MAX_WIDGET_ITEMS)
@@ -173,7 +179,8 @@ export function formatTodoDialogTitle(items: TodoItem[]): string {
     return "待办事项 · 暂无任务 (按 ESC 退出)";
   }
   const completed = items.filter((i) => i.status === "completed").length;
-  return `待办事项 · ${completed}/${items.length} 完成 (按 ESC 退出)`;
+  const cancelled = items.filter((i) => i.status === "cancelled").length;
+  return `待办事项 · ${completed}/${items.length} 完成${cancelled ? ` · ${cancelled} 项取消` : ""} (按 ESC 退出)`;
 }
 
 /** Select options for the /todos command: glyph, id, text, and blocked reason. */

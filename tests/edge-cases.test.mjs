@@ -74,6 +74,33 @@ test("validation: blank text and whitespace reason rejection", async () => {
   assert.equal(resBlankReason.isError, true, "whitespace-only reason rejected");
 });
 
+test("snapshot restore reports all independent validation errors at once", async () => {
+  const harness = await createExtensionTestHarness();
+  const branch = [{
+    type: "custom",
+    customType: "pi-todo-state",
+    data: {
+      version: 1,
+      items: [
+        { id: 1, text: "", status: "pending" },
+        { id: 2, text: "blocked item", status: "blocked" },
+        { id: 3, text: "bad status", status: "unknown" },
+      ],
+    },
+  }];
+  const mock = harness.createMockContext({ sessionManager: { getBranch: () => branch } });
+  await harness.ext.handlers.get("session_start")[0]({ type: "session_start", reason: "resume" }, mock.ctx);
+
+  const warning = mock.notifications.find(n => n.type === "warning");
+  assert.ok(warning, "invalid snapshot must warn");
+  assert.match(warning.msg, /3 errors/);
+  assert.match(warning.msg, /Item 1: Task text cannot be blank/);
+  assert.match(warning.msg, /Item 2 is blocked but missing non-blank reason/);
+  assert.match(warning.msg, /Item 3 has invalid status/);
+  const result = await harness.tool.definition.execute("list", { action: "list" }, undefined, undefined, mock.ctx);
+  assert.deepEqual(result.structuredContent.items, [], "invalid snapshot resets state");
+});
+
 test("session_tree handler: restores state when branch switches", async () => {
   const harness = await createExtensionTestHarness();
   const { tool, ext, createMockContext } = harness;

@@ -5,11 +5,13 @@ export const TODO_CONTEXT_TYPE = "pi-todo-context" as const;
 
 /**
  * Format todo items into persistent context snapshot content.
- * When items is empty or all items are completed, outputs `{ todos: [] }`.
+ * When no open work remains (every task is completed or cancelled), outputs
+ * `{ todos: [] }`. Otherwise the full plan is kept, including closed items,
+ * so the model retains the audit trail.
  * Never includes volatile timestamps or ephemeral metadata.
  */
 export function formatTodoContextContent(items: readonly TodoItem[]): string {
-  const unfinished = items.filter((item: TodoItem) => item.status !== "completed");
+  const unfinished = items.filter((item: TodoItem) => item.status !== "completed" && item.status !== "cancelled");
   if (unfinished.length === 0) {
     return JSON.stringify({ todos: [] });
   }
@@ -26,31 +28,6 @@ export function formatTodoContextContent(items: readonly TodoItem[]): string {
       return entry;
     }),
   });
-}
-
-/**
- * Checks whether two todo item lists are identical in IDs, text, status, and reason.
- */
-export function areTodoItemsEqual(
-  a: readonly TodoItem[],
-  b: readonly TodoItem[]
-): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  for (let i = 0; i < a.length; i++) {
-    const itemA = a[i];
-    const itemB = b[i];
-    if (
-      itemA.id !== itemB.id ||
-      itemA.text !== itemB.text ||
-      itemA.status !== itemB.status ||
-      itemA.reason !== itemB.reason
-    ) {
-      return false;
-    }
-  }
-  return true;
 }
 
 /**

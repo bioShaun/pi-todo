@@ -11,7 +11,7 @@ test("registration: registers todo tool and /todos slash command without interfe
   assert.ok(harness.todosCmd, "/todos command registered");
 });
 
-test("sequential ids and four states: set creates sequential ids 1..N and supports pending, in_progress, completed, blocked", async () => {
+test("sequential ids and five states: set creates sequential ids 1..N and supports pending, in_progress, completed, cancelled, blocked", async () => {
   const harness = await createExtensionTestHarness();
   const { tool, createMockContext, customEntries } = harness;
   const { ctx } = createMockContext();
@@ -23,22 +23,82 @@ test("sequential ids and four states: set creates sequential ids 1..N and suppor
       { text: "Task B", status: "in_progress" },
       { text: "Task C", status: "blocked", reason: "waiting for specs" },
       { text: "Task D", status: "completed" },
+      { text: "Task E", status: "cancelled" },
     ],
   }, undefined, undefined, ctx);
 
   assert.equal(res.isError, undefined, "set should succeed: " + JSON.stringify(res));
   assert.equal(customEntries.length, 1, "persisted snapshot");
   const items = customEntries[0].data.items;
-  assert.equal(items.length, 4);
+  assert.equal(items.length, 5);
   assert.equal(items[0].id, 1);
   assert.equal(items[1].id, 2);
   assert.equal(items[2].id, 3);
   assert.equal(items[3].id, 4);
+  assert.equal(items[4].id, 5);
   assert.equal(items[0].status, "pending");
   assert.equal(items[1].status, "in_progress");
   assert.equal(items[2].status, "blocked");
   assert.equal(items[2].reason, "waiting for specs");
   assert.equal(items[3].status, "completed");
+  assert.equal(items[4].status, "cancelled");
+});
+
+test("cancelled status: keeps ids, renders as closed work, and leaves model context", async () => {
+  const harness = await createExtensionTestHarness();
+  const { tool, customEntries, sentMessages } = harness;
+  const mock = harness.createMockContext();
+  const run = (call, params) => tool.definition.execute(call, params, undefined, undefined, mock.ctx);
+
+  await run("cancel-seed", {
+    action: "set",
+    items: [
+      { text: "Keep working", status: "in_progress" },
+      { text: "Drop this", status: "pending" },
+      { text: "Already done", status: "completed" },
+    ],
+  });
+  assert.equal(customEntries.length, 1);
+  assert.equal(sentMessages.length, 1);
+
+  const cancelled = await run("cancel-one", {
+    action: "update",
+    updates: [{ id: 2, status: "cancelled" }],
+  });
+  assert.equal(cancelled.isError, undefined);
+  assert.equal(cancelled.structuredContent.items[1].id, 2, "cancelling must not renumber ids");
+  assert.equal(cancelled.structuredContent.items[1].status, "cancelled");
+  assert.equal(customEntries.length, 2, "cancellation is persisted");
+  assert.equal(sentMessages.length, 2);
+  const listed = await run("cancel-list", { action: "list" });
+  assert.match(listed.content[0].text, /\[已取消\]/);
+
+  const context = JSON.parse(sentMessages[1].message.content);
+  assert.deepEqual(context.todos.map(item => item.id), [1, 2, 3], "open plans keep the full audit trail");
+  assert.equal(context.todos[1].status, "cancelled");
+  const widget = mock.getWidgetContent(120);
+  assert.match(widget[0], /1\/3 完成 · 1 项取消/);
+  assert.match(widget.join("\n"), /⊘ #2\s+Drop this/);
+
+  await run("cancel-all", {
+    action: "update",
+    updates: [{ id: 1, status: "cancelled" }],
+  });
+  assert.deepEqual(JSON.parse(sentMessages.at(-1).message.content).todos, [], "all closed work yields an empty context snapshot");
+
+  const restoredMock = harness.createMockContext({
+    sessionManager: {
+      getBranch: () => [{
+        type: "custom",
+        customType: "pi-todo-state",
+        data: { version: 1, items: [{ id: 1, text: "Dropped", status: "cancelled" }] },
+      }],
+    },
+  });
+  await harness.ext.handlers.get("session_start")[0]({ type: "session_start", reason: "resume" }, restoredMock.ctx);
+  const restored = await tool.definition.execute("cancel-restore", { action: "list" }, undefined, undefined, restoredMock.ctx);
+  assert.equal(restored.structuredContent.items[0].status, "cancelled");
+  assert.equal(restoredMock.notifications.some(n => n.type === "warning"), false);
 });
 
 test("single active enforcement: cannot have >1 in_progress tasks", async () => {
@@ -127,6 +187,54 @@ test("invalid operations atomic: batch failure leaves state unchanged", async ()
   assert.doesNotMatch(listRes.content[0].text, /in_progress|进行中/i);
 });
 
+test("batch validation aggregates independent errors for set and update", async () => {
+  const harness = await createExtensionTestHarness();
+  const { tool, customEntries, sentMessages } = harness;
+  const { ctx } = harness.createMockContext();
+  const run = (call, params) => tool.definition.execute(call, params, undefined, undefined, ctx);
+
+  await run("aggregate-seed", {
+    action: "set",
+    items: [{ text: "Task A", status: "pending" }, { text: "Task B", status: "pending" }],
+  });
+  assert.equal(customEntries.length, 1);
+  assert.equal(sentMessages.length, 1);
+
+  const badSet = await run("aggregate-set", {
+    action: "set",
+    items: [
+      { text: "", status: "pending" },
+      { text: "Bad status", status: "unknown" },
+      { text: "Blocked without reason", status: "blocked" },
+    ],
+  });
+  assert.equal(badSet.isError, true);
+  assert.equal(badSet.structuredContent.errors.length, 3, "all independent set errors are returned");
+  assert.match(badSet.structuredContent.error, /3 errors/);
+  assert.match(badSet.structuredContent.error, /Item 1: Task text cannot be blank/);
+  assert.match(badSet.structuredContent.error, /Item 2 has invalid status/);
+  assert.match(badSet.structuredContent.error, /Item 3: Blocked status requires a reason/);
+  assert.deepEqual(badSet.structuredContent.items.map(item => item.text), ["Task A", "Task B"]);
+  assert.equal(customEntries.length, 1, "invalid set must not persist");
+
+  const badUpdate = await run("aggregate-update", {
+    action: "update",
+    updates: [
+      { id: 1, text: "" },
+      { id: 2, status: "unknown" },
+      { id: 99, status: "completed" },
+    ],
+  });
+  assert.equal(badUpdate.isError, true);
+  assert.equal(badUpdate.structuredContent.errors.length, 3, "all independent update errors are returned");
+  assert.match(badUpdate.structuredContent.error, /Task 1: Task text cannot be blank/);
+  assert.match(badUpdate.structuredContent.error, /Task 2: Invalid status/);
+  assert.match(badUpdate.structuredContent.error, /Unknown task id 99/);
+  assert.deepEqual(badUpdate.structuredContent.items.map(item => item.text), ["Task A", "Task B"]);
+  assert.equal(customEntries.length, 1, "invalid update must not persist");
+  assert.equal(sentMessages.length, 1, "invalid update must not append a context message");
+});
+
 test("duplicate ids in batch updates are rejected", async () => {
   const harness = await createExtensionTestHarness();
   const { tool, createMockContext } = harness;
@@ -162,6 +270,48 @@ test("persistence failure leaves state unchanged", async () => {
 
   const listRes = await tool.definition.execute("call-2", { action: "list" }, undefined, undefined, ctx);
   assert.doesNotMatch(listRes.content[0].text, /Task 1/);
+});
+
+test("no-op mutations do not append state snapshots or context messages", async () => {
+  const harness = await createExtensionTestHarness();
+  const { tool, customEntries, sentMessages } = harness;
+  const { ctx } = harness.createMockContext();
+  const run = (call, params) => tool.definition.execute(call, params, undefined, undefined, ctx);
+
+  await run("noop-seed", {
+    action: "set",
+    items: [
+      { text: "Task A", status: "pending" },
+      { text: "Task B", status: "blocked", reason: "waiting" },
+    ],
+  });
+  assert.equal(customEntries.length, 1);
+  assert.equal(sentMessages.length, 1);
+
+  const sameUpdate = await run("noop-update", {
+    action: "update",
+    updates: [{ id: 1, status: "pending", text: " Task A " }, { id: 2 }],
+  });
+  assert.equal(sameUpdate.isError, undefined);
+  assert.equal(customEntries.length, 1, "unchanged update must not append a state snapshot");
+  assert.equal(sentMessages.length, 1, "unchanged update must not append a context message");
+
+  const sameSet = await run("noop-set", {
+    action: "set",
+    items: [
+      { text: "Task A", status: "pending" },
+      { text: "Task B", status: "blocked", reason: "waiting" },
+    ],
+  });
+  assert.equal(sameSet.isError, undefined);
+  assert.equal(customEntries.length, 1, "identical set must not append a state snapshot");
+  assert.equal(sentMessages.length, 1, "identical set must not append a context message");
+
+  await run("noop-clear", { action: "clear" });
+  assert.equal(customEntries.length, 2, "clearing a non-empty plan persists once");
+  await run("noop-clear-again", { action: "clear" });
+  assert.equal(customEntries.length, 2, "clearing an empty plan is a no-op");
+  assert.equal(sentMessages.length, 2, "clearing an empty plan must not append a context message");
 });
 
 test("snapshots and history immutable", async () => {
@@ -469,6 +619,7 @@ test("regression: outputSchema defined and structuredContent returned for succes
   assert.ok(tool.definition.outputSchema, "tool must define outputSchema");
   assert.equal(tool.definition.outputSchema.type, "object");
   assert.ok(tool.definition.outputSchema.properties?.items, "outputSchema has items");
+  assert.ok(tool.definition.outputSchema.properties?.errors, "outputSchema has aggregated errors");
 
   // 1. Success response has matching structuredContent
   const setRes = await tool.definition.execute("call-1", {
@@ -490,6 +641,7 @@ test("regression: outputSchema defined and structuredContent returned for succes
   assert.equal(errRes.isError, true);
   assert.ok(errRes.structuredContent, "structuredContent must be returned on error");
   assert.ok(errRes.structuredContent.error, "error string present in structuredContent");
+  assert.deepEqual(errRes.structuredContent.errors, ["Unknown task id 999"], "individual errors present");
   assert.equal(errRes.structuredContent.items.length, 1, "items array preserved in structuredContent");
 });
 
