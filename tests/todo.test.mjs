@@ -440,7 +440,7 @@ test("regression: {action: 'set'} requires explicit items array and preserves se
   }
 
   // 4. Malformed reason on nonblocked tasks in 'set'
-  for (const badReason of [123, "   ", "r".repeat(241)]) {
+  for (const badReason of [123, null, "r".repeat(241)]) {
     const resBadReason = await tool.definition.execute("bad-reason-set", {
       action: "set",
       items: [{ text: "Pending Task", status: "pending", reason: badReason }],
@@ -450,7 +450,7 @@ test("regression: {action: 'set'} requires explicit items array and preserves se
   }
 
   // 5. Malformed reason on 'update'
-  for (const badReason of [123, "   ", "r".repeat(241)]) {
+  for (const badReason of [123, null, "r".repeat(241)]) {
     const resBadReasonUpdate = await tool.definition.execute("bad-reason-update", {
       action: "update",
       updates: [{ id: 1, reason: badReason }],
@@ -491,6 +491,123 @@ test("regression: outputSchema defined and structuredContent returned for succes
   assert.ok(errRes.structuredContent, "structuredContent must be returned on error");
   assert.ok(errRes.structuredContent.error, "error string present in structuredContent");
   assert.equal(errRes.structuredContent.items.length, 1, "items array preserved in structuredContent");
+});
+
+test("reported Unicode set payload normalizes reasons in every output", async () => {
+  const h = await createExtensionTestHarness();
+  const { customEntries, sentMessages } = h;
+  const { ctx } = h.createMockContext();
+  const res = await h.tool.definition.execute("reported-payload", {
+    action: "set", updates: [], items: [
+      { reason: "", status: "in_progress", text: "定位 BLAST 工具任务 UnicodeEncodeError 的根因与触发链路" },
+      { reason: "", status: "pending", text: "修复编码契约并补充对应回归验证" },
+      { reason: "", status: "pending", text: "检查差异、验证结果并提交修复" },
+    ],
+  }, undefined, undefined, ctx);
+  assert.equal(res.isError, undefined);
+  assert.equal(res.structuredContent.items.length, 3);
+  assert.ok(res.structuredContent.items.every(item => !Object.hasOwn(item, "reason")));
+  assert.ok(customEntries.at(-1).data.items.every(item => !Object.hasOwn(item, "reason")));
+  assert.ok(JSON.parse(sentMessages.at(-1).message.content).todos.every(item => !Object.hasOwn(item, "reason")));
+});
+
+test("nonblocked set and update normalize blank and nonblank reasons", async () => {
+  for (const status of [undefined, "pending", "in_progress", "completed"]) {
+    for (const reason of ["", " \t ", "valid reason"]) {
+      const h = await createExtensionTestHarness();
+      const { customEntries, sentMessages } = h;
+      const { ctx } = h.createMockContext();
+      const items = [{ text: "first", ...(status ? { status } : {}), reason }];
+      if (status === "in_progress") items.push({ text: "second", status: "pending", reason });
+      const set = await h.tool.definition.execute("table-set", { action: "set", items }, undefined, undefined, ctx);
+      assert.equal(set.isError, undefined, `set status=${status} reason=${JSON.stringify(reason)}`);
+      assert.ok(set.structuredContent.items.every(item => !Object.hasOwn(item, "reason")));
+      assert.ok(customEntries.at(-1).data.items.every(item => !Object.hasOwn(item, "reason")));
+      assert.ok(JSON.parse(sentMessages.at(-1).message.content).todos.every(item => !Object.hasOwn(item, "reason")));
+      for (const updateStatus of [undefined, status]) {
+        const update = await h.tool.definition.execute("table-update", { action: "update", updates: [
+          { id: 1, ...(updateStatus ? { status: updateStatus } : {}), reason },
+        ] }, undefined, undefined, ctx);
+        assert.equal(update.isError, undefined, `update status=${updateStatus} reason=${JSON.stringify(reason)}`);
+        assert.ok(update.structuredContent.items.every(item => !Object.hasOwn(item, "reason")));
+        assert.ok(customEntries.at(-1).data.items.every(item => !Object.hasOwn(item, "reason")));
+        assert.ok(JSON.parse(sentMessages.at(-1).message.content).todos.every(item => !Object.hasOwn(item, "reason")));
+      }
+    }
+  }
+});
+
+test("blocked reasons are required, preserved, and atomically validated", async () => {
+  const h = await createExtensionTestHarness();
+  const { customEntries, sentMessages } = h;
+  const { ctx } = h.createMockContext();
+  const run = (call, params) => h.tool.definition.execute(call, params, undefined, undefined, ctx);
+  const seed = await run("seed", { action: "set", items: [
+    { text: "blocked", status: "blocked", reason: "waiting" }, { text: "pending", status: "pending" },
+  ] });
+  assert.equal(seed.isError, undefined);
+  const preserved = await run("preserve", { action: "update", updates: [{ id: 1 }] });
+  assert.equal(preserved.structuredContent.items[0].reason, "waiting");
+  for (const reason of ["", " \t "]) {
+    const badExisting = await run("bad-existing", { action: "update", updates: [{ id: 1, reason }] });
+    assert.equal(badExisting.isError, true);
+    assert.match(badExisting.structuredContent.error, /blank/i);
+    const badSet = await run("bad-set", { action: "set", items: [
+      { text: "valid nonblocked", status: "pending", reason: "" }, { text: "invalid", status: "blocked", reason },
+    ] });
+    assert.equal(badSet.isError, true);
+    assert.match(badSet.structuredContent.error, /blank/i);
+  }
+  for (const reason of [undefined, "", " \t "]) {
+    const setItem = { text: "blocked", status: "blocked" };
+    if (reason !== undefined) setItem.reason = reason;
+    const badSet = await run("missing-blocked-set", { action: "set", items: [setItem] });
+    assert.equal(badSet.isError, true);
+    assert.match(badSet.structuredContent.error, /reason|blank/i);
+    const badTransition = await run("missing-blocked-update", { action: "update", updates: [{ id: 2, status: "blocked", ...(reason === undefined ? {} : { reason }) }] });
+    assert.equal(badTransition.isError, true);
+    assert.match(badTransition.structuredContent.error, /reason|blank/i);
+  }
+  const before = await run("before", { action: "list" });
+  const entryCount = customEntries.length;
+  const sentCount = sentMessages.length;
+  const failedBatch = await run("atomic-invalid", { action: "update", updates: [
+    { id: 1, status: "completed", reason: "" }, { id: 2, status: "blocked", reason: " " },
+  ] });
+  assert.equal(failedBatch.isError, true);
+  assert.match(failedBatch.structuredContent.error, /blank/i);
+  assert.deepEqual(failedBatch.structuredContent.items, before.structuredContent.items);
+  assert.equal(customEntries.length, entryCount);
+  assert.equal(sentMessages.length, sentCount);
+  const cleared = await run("clear-reason", { action: "update", updates: [{ id: 1, status: "pending", reason: "" }] });
+  assert.equal(cleared.isError, undefined);
+  assert.equal(Object.hasOwn(cleared.structuredContent.items[0], "reason"), false);
+});
+
+test("session_start restores normalized nonblocked reasons and rejects invalid blocked reasons", async () => {
+  const h = await createExtensionTestHarness();
+  const start = h.ext.handlers.get("session_start")[0];
+  for (const reason of ["", " \t ", "valid reason"]) {
+    const branch = [{ type: "custom", customType: "pi-todo-state", data: { version: 1, items: [
+      { id: 1, text: "restored", status: "pending", reason },
+    ] } }];
+    const mock = h.createMockContext({ sessionManager: { getBranch: () => branch } });
+    await start({ type: "session_start", reason: "resume" }, mock.ctx);
+    const res = await h.tool.definition.execute("restored", { action: "list" }, undefined, undefined, mock.ctx);
+    assert.equal(res.structuredContent.items.length, 1);
+    assert.equal(Object.hasOwn(res.structuredContent.items[0], "reason"), false);
+    assert.equal(mock.notifications.some(n => n.type === "warning"), false);
+  }
+  for (const reason of [undefined, "", " \t "]) {
+    const item = { id: 1, text: "invalid blocked", status: "blocked" };
+    if (reason !== undefined) item.reason = reason;
+    const branch = [{ type: "custom", customType: "pi-todo-state", data: { version: 1, items: [item] } }];
+    const mock = h.createMockContext({ sessionManager: { getBranch: () => branch } });
+    await start({ type: "session_start", reason: "resume" }, mock.ctx);
+    const res = await h.tool.definition.execute("rejected-restore", { action: "list" }, undefined, undefined, mock.ctx);
+    assert.equal(res.structuredContent.items.length, 0);
+    assert.ok(mock.notifications.some(n => n.type === "warning"));
+  }
 });
 
 test("regression: widget factory component render(width) handles CJK/emoji at 12/30 cols, resize and sanitization", async () => {

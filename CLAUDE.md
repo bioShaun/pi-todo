@@ -93,6 +93,7 @@ The 2026-10-20 fix (`c634801`) removed a `context` hook that filtered all old to
 - `MAX_ITEMS`: 20 items maximum.
 - `MAX_TEXT`: 160 characters maximum per task text (trimmed, non-blank).
 - `MAX_REASON`: 240 characters maximum per blocked reason (trimmed, required when status is `blocked`, validated on all items).
+- For nonblocked effective status, omitted reason is valid and supplied blank/whitespace-only strings normalize to absent; supplied nonblank strings are validated then discarded. Wrong types and overlong nonblank strings remain invalid. Blocked reasons remain strict: blank values reject, entering blocked requires a nonblank reason, omitted reason on an already-blocked update preserves it, and leaving blocked clears it.
 - `in_progress` concurrency: At most 1 task may be `in_progress` at any time.
 - All validation errors return `{ isError: true, content: [...], structuredContent: { items, error } }` without mutating memory or appending session entries.
 

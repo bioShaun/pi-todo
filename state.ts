@@ -75,6 +75,13 @@ export function validateReason(reason: unknown): { valid: boolean; reason?: stri
   return { valid: true, reason: trimmed };
 }
 
+function normalizeReason(status: TodoStatus, reason: unknown): { valid: boolean; reason?: string; error?: string } {
+  if (status === "blocked") return validateReason(reason);
+  if (typeof reason === "string" && reason.trim() === "") return { valid: true };
+  const result = validateReason(reason);
+  return result.valid ? { valid: true } : result;
+}
+
 export function validateSnapshotItems(items: unknown): { valid: boolean; items?: TodoItem[]; error?: string } {
   if (!Array.isArray(items)) {
     return { valid: false, error: "Items must be an array" };
@@ -114,13 +121,13 @@ export function validateSnapshotItems(items: unknown): { valid: boolean; items?:
 
     let reason: string | undefined;
     if (status === "blocked") {
-      const reasonRes = validateReason((raw as Record<string, unknown>).reason);
+      const reasonRes = normalizeReason(status, (raw as Record<string, unknown>).reason);
       if (!reasonRes.valid || !reasonRes.reason) {
         return { valid: false, error: `Item ${id} is blocked but missing non-blank reason` };
       }
       reason = reasonRes.reason;
     } else if ((raw as Record<string, unknown>).reason !== undefined) {
-      const reasonRes = validateReason((raw as Record<string, unknown>).reason);
+      const reasonRes = normalizeReason(status, (raw as Record<string, unknown>).reason);
       if (!reasonRes.valid) {
         return { valid: false, error: `Item ${id} has invalid reason: ${reasonRes.error}` };
       }
@@ -209,13 +216,11 @@ export class TodoStateManager {
 
       let reason: string | undefined;
       if (raw.reason !== undefined) {
-        const reasonRes = validateReason(raw.reason);
-        if (!reasonRes.valid || !reasonRes.reason) {
+        const reasonRes = normalizeReason(status, raw.reason);
+        if (!reasonRes.valid) {
           return { success: false, error: reasonRes.error || "Invalid reason" };
         }
-        if (status === "blocked") {
-          reason = reasonRes.reason;
-        }
+        reason = reasonRes.reason;
       } else if (status === "blocked") {
         return { success: false, error: "Blocked status requires a reason" };
       }
@@ -280,13 +285,11 @@ export class TodoStateManager {
 
       let newReason: string | undefined;
       if (u.reason !== undefined) {
-        const reasonRes = validateReason(u.reason);
-        if (!reasonRes.valid || !reasonRes.reason) {
+        const reasonRes = normalizeReason(newStatus, u.reason);
+        if (!reasonRes.valid) {
           return { success: false, error: reasonRes.error || "Invalid reason" };
         }
-        if (newStatus === "blocked") {
-          newReason = reasonRes.reason;
-        }
+        newReason = reasonRes.reason;
       } else if (newStatus === "blocked") {
         if (current.status === "blocked" && current.reason) {
           newReason = current.reason;
