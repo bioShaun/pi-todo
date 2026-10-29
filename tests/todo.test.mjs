@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createExtensionTestHarness, createThemeStub } from "./harness.mjs";
+import path from "node:path";
+import { createExtensionTestHarness, createThemeStub, getHostRoot } from "./harness.mjs";
 
 test("registration: registers todo tool and /todos slash command without interfering with tools", async () => {
   const harness = await createExtensionTestHarness();
@@ -462,6 +463,75 @@ test("Alt+T and /todos toggle only collapse presentation; updates preserve it an
   await shortcut.handler(mock.ctx);
   await h.ext.handlers.get("session_start")[0]({},mock.ctx);
   assert.ok(mock.getWidgetContent().length > 1, "new session starts expanded");
+});
+
+test("mouse summary click shares collapse state without changing todos or context", async () => {
+  const { Container } = await import(path.join(getHostRoot(), "@earendil-works/pi-tui/dist/tui.js"));
+  const h = await createExtensionTestHarness();
+  const mock = h.createMockContext();
+  const run = params => h.tool.definition.execute("mouse", params, undefined, undefined, mock.ctx);
+  await run({ action: "set", items: [{ text: "First" }, { text: "Second" }] });
+  const entries = h.customEntries.length;
+  const messages = h.sentMessages.length;
+  const root = new Container();
+  const spacer = { render: () => ["spacer"], invalidate() {} };
+  const dispatch = (type, y, button = "left") => {
+    root.clear();
+    root.addChild(spacer);
+    root.addChild(mock.getWidgetComponent());
+    const height = root.render(80).length;
+    return root.handleMouse({ type, button, x: 3, y, screenX: 3, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false });
+  };
+  assert.equal(dispatch("press", 1)?.handled, true, "summary press must establish the host click target");
+  assert.equal(mock.getWidgetContent().length > 1, true);
+  assert.equal(dispatch("release", 1), undefined);
+  assert.equal(dispatch("click", 1)?.handled, true);
+  assert.equal(mock.getWidgetContent().length, 1);
+  assert.equal(dispatch("click", 1)?.handled, true);
+  assert.ok(mock.getWidgetContent().length > 1);
+  for (const [type, y, button] of [["click", 2, "left"], ["press", 2, "left"], ["press", 1, "right"], ["click", 1, "right"], ["drag", 1, "left"], ["wheel", 1, "none"], ["move", 1, "none"]]) {
+    assert.equal(dispatch(type, y, button), undefined, `${type} at ${y} with ${button} must propagate`);
+    assert.ok(mock.getWidgetContent().length > 1);
+  }
+  dispatch("click", 1);
+  await h.ext.shortcuts.get("alt+t").handler(mock.ctx);
+  assert.ok(mock.getWidgetContent().length > 1);
+  await h.todosCmd.handler("toggle", mock.ctx);
+  assert.equal(mock.getWidgetContent().length, 1);
+  dispatch("click", 1);
+  assert.ok(mock.getWidgetContent().length > 1);
+  assert.equal(h.customEntries.length, entries);
+  assert.equal(h.sentMessages.length, messages);
+  assert.deepEqual((await run({ action: "list" })).structuredContent.items.map(item => item.text), ["First", "Second"]);
+});
+
+test("host alt-screen press and release synthesize a summary click, but dragging does not", async () => {
+  const { Container } = await import(path.join(getHostRoot(), "@earendil-works/pi-tui/dist/tui.js"));
+  const { TuiAltScreen } = await import(path.join(getHostRoot(), "@earendil-works/pi-tui/dist/tui-alt-screen.js"));
+  const h = await createExtensionTestHarness();
+  const mock = h.createMockContext();
+  await h.tool.definition.execute("mouse", { action: "set", items: [{ text: "First" }] }, undefined, undefined, mock.ctx);
+  const root = new Container();
+  const tui = new TuiAltScreen({ columns: 80, rows: 20 });
+  tui.requestRender = () => {};
+  tui.dispatchMouseToLayout = event => {
+    root.clear();
+    root.addChild({ render: () => ["spacer"], invalidate() {} });
+    root.addChild(mock.getWidgetComponent());
+    const height = root.render(80).length;
+    return root.handleMouse({ ...event, height });
+  };
+  const mouse = (button, x, y, release = false) => tui.handleMouseEvent({ button, x, y, release });
+  mouse(0, 3, 1);
+  mouse(0, 3, 1, true);
+  assert.equal(mock.getWidgetContent().length, 1);
+  mouse(0, 3, 1);
+  mouse(0, 3, 1, true);
+  assert.ok(mock.getWidgetContent().length > 1);
+  mouse(0, 3, 1);
+  mouse(32, 4, 1);
+  mouse(0, 4, 1, true);
+  assert.ok(mock.getWidgetContent().length > 1);
 });
 
 test("sanitization: control characters and newlines stripped, width truncated safely", async () => {

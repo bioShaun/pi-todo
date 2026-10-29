@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { TodoStateManager, areTodoItemsEqual, type TodoItem } from "./state.ts";
 import {
   formatTodoContextContent,
@@ -177,6 +177,15 @@ export default function todoExtension(pi: ExtensionAPI): void {
       (_tui, theme) => ({
         render(width: number): string[] {
           return renderWidgetLines(stateManager.getItems(), width, theme, { collapsed }) ?? [];
+        },
+        handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+          if (event.y !== 0 || event.button !== "left") return undefined;
+          if (event.type === "press") return { handled: true, render: false };
+          if (event.type === "click") {
+            toggleTodos(ctx);
+            return { handled: true };
+          }
+          return undefined;
         },
         invalidate(): void {
           // Rendering reads the current state and width without caching.
