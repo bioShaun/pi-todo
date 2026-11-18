@@ -207,13 +207,6 @@ export function validateSnapshotItems(
     };
   }
 
-  const inProgress = result.filter((item) => item.status === "in_progress");
-  if (inProgress.length > 1) {
-    const ids = inProgress.map((item) => `#${item.id}`).join(", ");
-    const error = `At most one task can be in_progress at a time (found ${inProgress.length}: ${ids})`;
-    return { valid: false, error, errors: [error] };
-  }
-
   return { valid: true, items: result };
 }
 
@@ -314,12 +307,6 @@ export class TodoStateManager {
       return failure(errors);
     }
 
-    const inProgress = candidate.filter((item) => item.status === "in_progress");
-    if (inProgress.length > 1) {
-      const ids = inProgress.map((item) => `#${item.id}`).join(", ");
-      return failure([`At most one task can be in_progress at a time (found ${inProgress.length}: ${ids})`]);
-    }
-
     return this.commitState(candidate);
   }
 
@@ -403,12 +390,6 @@ export class TodoStateManager {
 
     if (errors.length > 0) {
       return failure(errors);
-    }
-
-    const inProgress = candidate.filter((item) => item.status === "in_progress");
-    if (inProgress.length > 1) {
-      const ids = inProgress.map((item) => `#${item.id}`).join(", ");
-      return failure([`At most one task can be in_progress at a time (found ${inProgress.length}: ${ids})`]);
     }
 
     return this.commitState(candidate);

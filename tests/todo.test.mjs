@@ -102,20 +102,104 @@ test("cancelled status: keeps ids, renders as closed work, and leaves model cont
   assert.equal(restoredMock.notifications.some(n => n.type === "warning"), false);
 });
 
-test("single active enforcement: cannot have >1 in_progress tasks", async () => {
+test("parallel progress: set and update allow multiple in_progress tasks without dropping active work or breaking single-task flow", async () => {
   const harness = await createExtensionTestHarness();
-  const { tool, createMockContext } = harness;
-  const { ctx } = createMockContext();
+  const { tool, createMockContext, customEntries, sentMessages } = harness;
+  const mock = createMockContext();
+  const run = (call, params) => tool.definition.execute(call, params, undefined, undefined, mock.ctx);
 
-  const res = await tool.definition.execute("call-2", {
+  // 1. set with multiple in_progress tasks succeeds and preserves IDs 1..N
+  const setRes = await run("parallel-set", {
     action: "set",
     items: [
-      { text: "Task 1", status: "in_progress" },
-      { text: "Task 2", status: "in_progress" },
+      { text: "Investigate API", status: "in_progress" },
+      { text: "Write regression test", status: "in_progress" },
+      { text: "Wait on upstream spec", status: "blocked", reason: "Need schema" },
+      { text: "Final verification", status: "pending" },
     ],
-  }, undefined, undefined, ctx);
+  });
+  assert.equal(setRes.isError, undefined, "setting multiple in_progress tasks must succeed: " + JSON.stringify(setRes));
+  assert.deepEqual(
+    setRes.structuredContent.items.map(i => [i.id, i.status]),
+    [[1, "in_progress"], [2, "in_progress"], [3, "blocked"], [4, "pending"]]
+  );
+  assert.equal(customEntries.length, 1);
+  assert.equal(sentMessages.length, 1);
 
-  assert.equal(res.isError, true, "setting >1 in_progress tasks should fail");
+  // 2. update adding another in_progress task must NOT silently downgrade #1 or #2
+  const addActiveRes = await run("parallel-add", {
+    action: "update",
+    updates: [{ id: 4, status: "in_progress" }],
+  });
+  assert.equal(addActiveRes.isError, undefined, "adding a parallel in_progress task must succeed");
+  assert.deepEqual(
+    addActiveRes.structuredContent.items.map(i => [i.id, i.status]),
+    [[1, "in_progress"], [2, "in_progress"], [3, "blocked"], [4, "in_progress"]]
+  );
+  assert.equal(addActiveRes.structuredContent.items[2].reason, "Need schema");
+
+  // 3. unblocking #3 directly into parallel in_progress clears blocked reason while keeping #1, #2, #4
+  const unblockParallelRes = await run("parallel-unblock", {
+    action: "update",
+    updates: [{ id: 3, status: "in_progress" }],
+  });
+  assert.equal(unblockParallelRes.isError, undefined);
+  assert.equal(unblockParallelRes.structuredContent.items[2].status, "in_progress");
+  assert.equal(Object.hasOwn(unblockParallelRes.structuredContent.items[2], "reason"), false);
+  assert.equal(unblockParallelRes.structuredContent.items.filter(i => i.status === "in_progress").length, 4);
+
+  // 4. invalid batch alongside parallel update rejects atomically without mutating state
+  const entriesBeforeFail = customEntries.length;
+  const badBatch = await run("parallel-atomic-fail", {
+    action: "update",
+    updates: [
+      { id: 1, status: "completed" },
+      { id: 3, status: "blocked" }, // missing reason
+    ],
+  });
+  assert.equal(badBatch.isError, true);
+  assert.equal(customEntries.length, entriesBeforeFail);
+  assert.deepEqual(
+    badBatch.structuredContent.items.map(i => i.status),
+    ["in_progress", "in_progress", "in_progress", "in_progress"]
+  );
+
+  // 5. partial completion keeps remaining in_progress tasks active and preserves context audit trail
+  const partialRes = await run("parallel-partial-complete", {
+    action: "update",
+    updates: [
+      { id: 1, status: "completed" },
+      { id: 3, status: "cancelled" },
+    ],
+  });
+  assert.equal(partialRes.isError, undefined);
+  assert.deepEqual(
+    partialRes.structuredContent.items.map(i => [i.id, i.status]),
+    [[1, "completed"], [2, "in_progress"], [3, "cancelled"], [4, "in_progress"]]
+  );
+  const ctxPayload = JSON.parse(sentMessages.at(-1).message.content);
+  assert.equal(ctxPayload.todos.length, 4, "context keeps full audit trail while parallel tasks remain open");
+
+  // 6. completing remaining parallel tasks closes context snapshot to todos: []
+  const doneRes = await run("parallel-complete-all", {
+    action: "update",
+    updates: [
+      { id: 2, status: "completed" },
+      { id: 4, status: "completed" },
+    ],
+  });
+  assert.equal(doneRes.isError, undefined);
+  assert.deepEqual(JSON.parse(sentMessages.at(-1).message.content).todos, []);
+});
+
+test("promptGuidelines contract: supports single-task sequential flow and genuine parallel work", async () => {
+  const harness = await createExtensionTestHarness();
+  const guidelines = harness.tool.definition.promptGuidelines || [];
+  const joined = guidelines.join("\n");
+  assert.doesNotMatch(joined, /at most one task in_progress/i, "promptGuidelines must not prohibit parallel in_progress tasks");
+  assert.match(joined, /parallel/i, "promptGuidelines must clarify parallel in_progress usage");
+  assert.match(joined, /sequential|single/i, "promptGuidelines must preserve single-task sequential guidance");
+  assert.match(joined, /blocked requires a reason/i);
 });
 
 test("batch transition and blocked reason lifecycle", async () => {
@@ -1007,4 +1091,42 @@ test("regression: simulated session_start reasons and invalid latest snapshot do
   const listAfterCorrupt = await tool.definition.execute("check-corrupt", { action: "list" }, undefined, undefined, corruptMock.ctx);
   assert.doesNotMatch(listAfterCorrupt.content[0].text, /Old valid task/, "must not fall back to previous valid snapshot");
   assert.match(listAfterCorrupt.content[0].text, /empty|暂无/i);
+});
+
+test("UI rendering: parallel in_progress count appears in widget header and /todos title when >1", async () => {
+  const { getHostRoot } = await import("./harness.mjs");
+  const tui = await import(getHostRoot() + "/@earendil-works/pi-tui/dist/index.js");
+
+  const harness = await createExtensionTestHarness();
+  const { tool, todosCmd, ext, createMockContext } = harness;
+  const mock = createMockContext();
+
+  await tool.definition.execute("parallel-ui", {
+    action: "set",
+    items: [
+      { text: "Worker A", status: "in_progress" },
+      { text: "Worker B", status: "in_progress" },
+      { text: "Queued C", status: "pending" },
+      { text: "Blocked D", status: "blocked", reason: "waiting" },
+      { text: "Done E", status: "completed" },
+      { text: "Queued F", status: "pending" },
+      { text: "Queued G", status: "pending" },
+    ],
+  }, undefined, undefined, mock.ctx);
+
+  const lines = mock.getWidgetContent(120);
+  assert.match(lines[0], /待办 1\/7 完成 · 2 项进行中 · 1 项受阻/);
+  assert.equal(lines.filter(l => /◐/.test(l)).length, 2, "all parallel in_progress tasks shown in widget");
+  assert.match(lines.at(-1), /另有 1 项 · \/todos 查看全部/);
+
+  // Collapsed header still displays parallel count
+  await ext.shortcuts.get("alt+t").handler(mock.ctx);
+  const collapsedLines = mock.getWidgetContent(120);
+  assert.equal(collapsedLines.length, 1);
+  assert.match(collapsedLines[0], /▸ 待办 1\/7 完成 · 2 项进行中 · 1 项受阻/);
+
+  // /todos dialog title also surfaces parallel active count
+  await todosCmd.handler("", mock.ctx);
+  const detailLines = mock.getDetails().component.render(80).map(l => tui.stripTerminalSequences(l));
+  assert.match(detailLines[0], /待办事项 · 1\/7 完成 · 2 项进行中/);
 });

@@ -127,6 +127,26 @@ try {
   const clearSnapshot = afterClearMsgs.filter((m) => m.customType === "pi-todo-context").at(-1);
   assert.deepEqual(JSON.parse(clearSnapshot.content), { todos: [] }, "cleared plan snapshot has todos: []");
 
+  // 5b. Parallel in_progress: host tool execution, JSONL persistence, and fresh-session reload
+  const parallelSet = await call(session, {
+    action: "set",
+    items: [
+      { text: "并行分支 A", status: "in_progress" },
+      { text: "并行分支 B", status: "in_progress" },
+      { text: "汇总验证", status: "pending" },
+    ],
+  });
+  assert.ok(!parallelSet.isError, JSON.stringify(parallelSet));
+  assert.deepEqual(
+    parallelSet.structuredContent.items.map((item) => [item.id, item.status]),
+    [[1, "in_progress"], [2, "in_progress"], [3, "pending"]]
+  );
+  session.dispose();
+  session = await openSession(SessionManager.open(file));
+  const parallelRestored = await call(session, { action: "list" });
+  assert.deepEqual(parallelRestored.structuredContent.items, parallelSet.structuredContent.items);
+  await call(session, { action: "clear" });
+
   // 6. Offline turn_end flush and prefix cache invariant verification (no model network requests)
   const dummyModel = { provider: "openai", model: "gpt-4o", input: ["text"] };
   const mockTool = session.agent.state.tools.find((candidate) => candidate.name === "todo");

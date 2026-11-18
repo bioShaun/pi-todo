@@ -164,3 +164,52 @@ test("snapshot recovery rejects nonsequential ids without reviving an older plan
     assert.equal(harness.customEntries.length, 0, "recovery must not rewrite session history");
   }
 });
+
+test("snapshot recovery restores both historical single-active and parallel multi-in_progress v1 snapshots", async () => {
+  const harness = await createExtensionTestHarness();
+  const start = harness.ext.handlers.get("session_start")[0];
+
+  // Historical single in_progress v1 snapshot
+  const singleBranch = [{
+    type: "custom",
+    customType: "pi-todo-state",
+    data: {
+      version: 1,
+      items: [
+        { id: 1, text: "Legacy active", status: "in_progress" },
+        { id: 2, text: "Legacy pending", status: "pending" },
+      ],
+    },
+  }];
+  const singleMock = harness.createMockContext({ sessionManager: { getBranch: () => singleBranch } });
+  await start({ type: "session_start", reason: "resume" }, singleMock.ctx);
+  const singleList = await harness.tool.definition.execute("legacy-list", { action: "list" }, undefined, undefined, singleMock.ctx);
+  assert.deepEqual(singleList.structuredContent.items.map(i => [i.id, i.status]), [[1, "in_progress"], [2, "pending"]]);
+  assert.equal(singleMock.notifications.some(n => n.type === "warning"), false);
+
+  // Parallel multi-in_progress v1 snapshot
+  const parallelBranch = [{
+    type: "custom",
+    customType: "pi-todo-state",
+    data: {
+      version: 1,
+      items: [
+        { id: 1, text: "Parallel A", status: "in_progress" },
+        { id: 2, text: "Parallel B", status: "in_progress" },
+        { id: 3, text: "Blocked C", status: "blocked", reason: "waiting on A & B" },
+      ],
+    },
+  }];
+  const parallelMock = harness.createMockContext({ sessionManager: { getBranch: () => parallelBranch } });
+  await start({ type: "session_start", reason: "resume" }, parallelMock.ctx);
+  const parallelList = await harness.tool.definition.execute("parallel-list", { action: "list" }, undefined, undefined, parallelMock.ctx);
+  assert.deepEqual(
+    parallelList.structuredContent.items,
+    [
+      { id: 1, text: "Parallel A", status: "in_progress" },
+      { id: 2, text: "Parallel B", status: "in_progress" },
+      { id: 3, text: "Blocked C", status: "blocked", reason: "waiting on A & B" },
+    ]
+  );
+  assert.equal(parallelMock.notifications.some(n => n.type === "warning"), false);
+});

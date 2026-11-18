@@ -109,11 +109,13 @@ function rail(theme?: TodoTheme): string {
 
 function renderHeaderLine(items: TodoItem[], maxWidth: number, theme: TodoTheme | undefined, collapsed: boolean): string {
   const completed = items.filter(item => item.status === "completed").length;
+  const inProgress = items.filter(item => item.status === "in_progress").length;
   const blocked = items.filter(item => item.status === "blocked").length;
   const cancelled = items.filter(item => item.status === "cancelled").length;
   const summary = `${completed}/${items.length} ${completed === items.length ? "全部完成" : "完成"}`;
   const line = rail(theme) + paint(theme, "muted", `${collapsed ? "▸" : "▾"} 待办 `)
     + paintBold(theme, paint(theme, completed === items.length ? "success" : "accent", summary))
+    + (inProgress > 1 ? paint(theme, "accent", ` · ${inProgress} 项进行中`) : "")
     + (blocked ? paint(theme, "warning", ` · ${blocked} 项受阻`) : "")
     + (cancelled ? paint(theme, "dim", ` · ${cancelled} 项取消`) : "");
   const hint = ` · Alt+T ${collapsed ? "展开" : "折叠"}`;
@@ -179,8 +181,9 @@ export function formatTodoDialogTitle(items: TodoItem[]): string {
     return "待办事项 · 暂无任务 (按 ESC 退出)";
   }
   const completed = items.filter((i) => i.status === "completed").length;
+  const inProgress = items.filter((i) => i.status === "in_progress").length;
   const cancelled = items.filter((i) => i.status === "cancelled").length;
-  return `待办事项 · ${completed}/${items.length} 完成${cancelled ? ` · ${cancelled} 项取消` : ""} (按 ESC 退出)`;
+  return `待办事项 · ${completed}/${items.length} 完成${inProgress > 1 ? ` · ${inProgress} 项进行中` : ""}${cancelled ? ` · ${cancelled} 项取消` : ""} (按 ESC 退出)`;
 }
 
 /** Select options for the /todos command: glyph, id, text, and blocked reason. */

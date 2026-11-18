@@ -97,8 +97,8 @@ The 2026-10-20 fix (`c634801`) removed a `context` hook that filtered all old to
 - `MAX_REASON`: 240 characters maximum per blocked reason (trimmed, required when status is `blocked`, validated on all items).
 - For nonblocked effective status, omitted reason is valid and supplied blank/whitespace-only strings normalize to absent; supplied nonblank strings are validated then discarded. Wrong types and overlong nonblank strings remain invalid. Blocked reasons remain strict: blank values reject, entering blocked requires a nonblank reason, omitted reason on an already-blocked update preserves it, and leaving blocked clears it.
 - `cancelled` is a closed, nonblocking status: it keeps the task ID and audit trail, does not count toward `in_progress`, and is included in the full context snapshot while other work is open.
-- `in_progress` concurrency: At most 1 task may be `in_progress` at any time.
-- All validation errors return `{ isError: true, content: [...], structuredContent: { items, error, errors } }` without mutating memory or appending session entries. `errors` aggregates every independent failure; global constraints (item count, in_progress concurrency) remain single errors.
+- `in_progress` concurrency: Single `in_progress` task is recommended for sequential work; multiple `in_progress` tasks are allowed when work is genuinely running in parallel (no artificial 1-task cap).
+- All validation errors return `{ isError: true, content: [...], structuredContent: { items, error, errors } }` without mutating memory or appending session entries. `errors` aggregates every independent failure; global constraints (item count) remain single errors.
 
 ## Testing & Validation
 Run tests with Node.js built-in test runner:

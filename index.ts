@@ -217,7 +217,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
     executionMode: "sequential",
     promptGuidelines: [
       "Use a short 3-6 step plan for multi-step work; skip todos for simple questions or one-step tasks.",
-      "Update statuses explicitly at milestones; at most one task in_progress; blocked requires a reason.",
+      "Update statuses explicitly at milestones; use a single in_progress task for sequential work, and multiple in_progress tasks only for work genuinely running in parallel; blocked requires a reason.",
       "Mark dropped work cancelled instead of deleting or renumbering the plan; completed means actually done.",
       "Delegated implementation is not verified completion: mark completed only after checking the required evidence.",
       "Replace or clear the plan when switching to an unrelated task.",

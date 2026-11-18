@@ -572,3 +572,52 @@ test("branch restoration and compaction: no duplicate when content unchanged, re
   }, matchedCtx);
   assert.equal(sentMessages.length, 0, "compact that retains snapshot produces no duplicate");
 });
+
+test("prefix caching: parallel in_progress set -> partial completion -> full completion preserves append-only prefix", async () => {
+  const harness = await createExtensionTestHarness();
+  const { tool, sentMessages, createMockContext } = harness;
+  const mock = createMockContext();
+
+  const setRes = await tool.definition.execute("p-set", {
+    action: "set",
+    items: [
+      { text: "Branch A", status: "in_progress" },
+      { text: "Branch B", status: "in_progress" },
+    ],
+  }, undefined, undefined, mock.ctx);
+  assert.equal(setRes.isError, undefined, "parallel set must succeed");
+  const snap1 = sentMessages[0];
+
+  const turn1Raw = [
+    { role: "user", content: "Run A and B in parallel", timestamp: 2000 },
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "p-set", name: "todo", arguments: { action: "set" } }],
+      timestamp: 2001,
+    },
+    { role: "toolResult", toolCallId: "p-set", toolName: "todo", content: setRes.content, timestamp: 2002 },
+    { role: "custom", customType: snap1.message.customType, content: snap1.message.content, display: snap1.message.display, timestamp: 2003 },
+  ];
+  const resp1 = convertResponsesMessages(dummyModel, { messages: convertToLlm(turn1Raw) }, new Set());
+
+  const updRes = await tool.definition.execute("p-upd", {
+    action: "update",
+    updates: [{ id: 1, status: "completed" }],
+  }, undefined, undefined, mock.ctx);
+  assert.equal(updRes.isError, undefined);
+  const snap2 = sentMessages[1];
+  const parsedSnap2 = JSON.parse(snap2.message.content);
+  assert.equal(parsedSnap2.todos[0].status, "completed");
+  assert.equal(parsedSnap2.todos[1].status, "in_progress");
+
+  const turn2Raw = [
+    ...turn1Raw,
+    { role: "assistant", content: [{ type: "text", text: "A finished, B still running" }], timestamp: 2004 },
+    { role: "user", content: "Status", timestamp: 2005 },
+    { role: "assistant", content: [{ type: "toolCall", id: "p-upd", name: "todo", arguments: { action: "update" } }], timestamp: 2006 },
+    { role: "toolResult", toolCallId: "p-upd", toolName: "todo", content: updRes.content, timestamp: 2007 },
+    { role: "custom", customType: snap2.message.customType, content: snap2.message.content, display: snap2.message.display, timestamp: 2008 },
+  ];
+  const resp2 = convertResponsesMessages(dummyModel, { messages: convertToLlm(turn2Raw) }, new Set());
+  assert.ok(isPrefix(resp1, resp2), "parallel partial update must preserve append-only prefix");
+});
