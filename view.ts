@@ -1,8 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { TodoItem, TodoStatus } from "./state.ts";
 
-export { visibleWidth };
-
 export const MAX_WIDGET_ITEMS = 6;
 
 /**
@@ -52,8 +50,8 @@ export function sanitizeText(text: string): string {
   }
   return text
     .replace(/\x1b[\]P_][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
-    .replace(/\x1b\[[0-9:;<=>?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[PX^_][^\x1b]*\x1b\\/g, "")
+    .replace(/(?:\x1b\[|\x9b)[0-9:;<=>?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[X^][^\x1b]*\x1b\\/g, "")
     .replace(/\x1b[@-Z\\-_]/g, "")
     .replace(/\x1b/g, "")
     .replace(/[\r\n\t]+/g, " ")
@@ -107,11 +105,27 @@ function rail(theme?: TodoTheme): string {
   return paint(theme, "dim", "│") + " ";
 }
 
+function summarizeTodoCounts(items: readonly TodoItem[]): {
+  completed: number;
+  inProgress: number;
+  blocked: number;
+  cancelled: number;
+} {
+  let completed = 0;
+  let inProgress = 0;
+  let blocked = 0;
+  let cancelled = 0;
+  for (const item of items) {
+    if (item.status === "completed") completed++;
+    else if (item.status === "in_progress") inProgress++;
+    else if (item.status === "blocked") blocked++;
+    else if (item.status === "cancelled") cancelled++;
+  }
+  return { completed, inProgress, blocked, cancelled };
+}
+
 function renderHeaderLine(items: TodoItem[], maxWidth: number, theme: TodoTheme | undefined, collapsed: boolean): string {
-  const completed = items.filter(item => item.status === "completed").length;
-  const inProgress = items.filter(item => item.status === "in_progress").length;
-  const blocked = items.filter(item => item.status === "blocked").length;
-  const cancelled = items.filter(item => item.status === "cancelled").length;
+  const { completed, inProgress, blocked, cancelled } = summarizeTodoCounts(items);
   const summary = `${completed}/${items.length} ${completed === items.length ? "全部完成" : "完成"}`;
   const line = rail(theme) + paint(theme, "muted", `${collapsed ? "▸" : "▾"} 待办 `)
     + paintBold(theme, paint(theme, completed === items.length ? "success" : "accent", summary))
@@ -180,25 +194,8 @@ export function formatTodoDialogTitle(items: TodoItem[]): string {
   if (items.length === 0) {
     return "待办事项 · 暂无任务 (按 ESC 退出)";
   }
-  const completed = items.filter((i) => i.status === "completed").length;
-  const inProgress = items.filter((i) => i.status === "in_progress").length;
-  const cancelled = items.filter((i) => i.status === "cancelled").length;
+  const { completed, inProgress, cancelled } = summarizeTodoCounts(items);
   return `待办事项 · ${completed}/${items.length} 完成${inProgress > 1 ? ` · ${inProgress} 项进行中` : ""}${cancelled ? ` · ${cancelled} 项取消` : ""} (按 ESC 退出)`;
-}
-
-/** Select options for the /todos command: glyph, id, text, and blocked reason. */
-export function formatTodoDialogOptions(items: TodoItem[]): string[] {
-  if (items.length === 0) {
-    return ["(暂无待办事项)"];
-  }
-
-  return items.map((item) => {
-    let row = `${statusGlyph(item.status)} #${item.id} ${sanitizeText(item.text)}`;
-    if (item.status === "blocked" && item.reason) {
-      row += ` · ${sanitizeText(item.reason)}`;
-    }
-    return row;
-  });
 }
 
 /** Plain, model-facing list with explicit status labels. */

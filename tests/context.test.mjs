@@ -151,13 +151,14 @@ test("context: set, update, clear trigger sendMessage; list, errors, and no-ops 
   const content3 = JSON.parse(sentMessages[2].message.content);
   assert.deepEqual(content3.todos, [], "all completed sends todos: [] snapshot");
 
-  // 7. Clear -> clears completed items
+  // 7. Clear -> clears completed items without emitting a duplicate empty snapshot
   const resClear = await tool.definition.execute("call-7", {
     action: "clear",
   }, undefined, undefined, mock.ctx);
   assert.equal(resClear.isError, undefined);
-  // Clear from empty or already all-completed: if content is already {"todos":[]}, no duplicate message sent
-  // But if clear from active tasks:
+  assert.equal(sentMessages.length, 3, "clear after all-completed must not send duplicate todos: [] snapshot");
+
+  // And clearing from active tasks does send todos: []
   await tool.definition.execute("call-8", {
     action: "set",
     items: [{ text: "Active task", status: "pending" }],

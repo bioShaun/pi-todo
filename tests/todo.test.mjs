@@ -318,6 +318,25 @@ test("batch validation aggregates independent errors for set and update", async 
   assert.deepEqual(badUpdate.structuredContent.items.map(item => item.text), ["Task A", "Task B"]);
   assert.equal(customEntries.length, 1, "invalid update must not persist");
   assert.equal(sentMessages.length, 1, "invalid update must not append a context message");
+
+  const crossPhaseUpdate = await run("aggregate-cross-phase-update", {
+    action: "update",
+    updates: [
+      { id: -1, status: "completed" },
+      { id: 1, text: "Valid text" },
+      { id: 1, status: "completed" },
+      { id: 2, status: "blocked" },
+      { id: 99, status: "completed" },
+    ],
+  });
+  assert.equal(crossPhaseUpdate.isError, true);
+  assert.equal(crossPhaseUpdate.structuredContent.errors.length, 4, "envelope and item errors aggregate in one batch");
+  assert.match(crossPhaseUpdate.structuredContent.error, /Update at index 0 must include a positive integer id/);
+  assert.match(crossPhaseUpdate.structuredContent.error, /Duplicate update for task id 1/);
+  assert.match(crossPhaseUpdate.structuredContent.error, /Task 2: Cannot mark blocked without a reason/);
+  assert.match(crossPhaseUpdate.structuredContent.error, /Unknown task id 99/);
+  assert.equal(customEntries.length, 1);
+  assert.equal(sentMessages.length, 1);
 });
 
 test("duplicate ids in batch updates are rejected", async () => {
@@ -933,8 +952,8 @@ test("regression: widget factory component render(width) handles CJK/emoji at 12
   const { tool, createMockContext } = harness;
   const mock = createMockContext();
 
-  // Untrusted text containing C1 controls, OSC, DCS, bidi, collapsed newlines, CJK and emoji
-  const untrustedText = "待办任务\u0084\u009b\x1b]0;BadOSC\x07\x1bPq\"1;1;100\x1b\\Line1\r\n\tLine2\u202Ereversed\u202C🚀🎉";
+  // Untrusted text containing C1 controls, 8-bit CSI, OSC, DCS, bidi, collapsed newlines, CJK and emoji
+  const untrustedText = "待办任务\u0084\u009b31mRed\x1b]0;BadOSC\x07\x1bPq\"1;1;100\x1b\\Line1\r\n\tLine2\u202Ereversed\u202C🚀🎉";
 
   await tool.definition.execute("call-1", {
     action: "set",
@@ -966,6 +985,7 @@ test("regression: widget factory component render(width) handles CJK/emoji at 12
     assert.doesNotMatch(stripped, /[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]/);
     assert.doesNotMatch(line, /[\r\n\t]/);
     assert.doesNotMatch(line, /BadOSC/);
+    assert.doesNotMatch(line, /31mRed/);
   }
 
   // 2. Resize with same component instance to 30 cols
@@ -978,6 +998,7 @@ test("regression: widget factory component render(width) handles CJK/emoji at 12
     assert.doesNotMatch(stripped, /[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]/);
     assert.doesNotMatch(line, /[\r\n\t]/);
     assert.doesNotMatch(line, /BadOSC/);
+    assert.doesNotMatch(line, /31mRed/);
   }
 });
 

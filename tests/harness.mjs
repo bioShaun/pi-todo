@@ -83,8 +83,6 @@ export async function createExtensionTestHarness(options = {}) {
     const notifications = [];
     let widgetContent = null;
     let widgetOptions = null;
-    let selectedTitle = null;
-    let selectedOptions = null;
     let detailComponent;
     let detailClosed = false;
     const terminal = { rows: 20 };
@@ -146,11 +144,6 @@ export async function createExtensionTestHarness(options = {}) {
           widgetContent = content;
           widgetOptions = opts;
         },
-        select: async (title, optsList) => {
-          selectedTitle = title;
-          selectedOptions = optsList;
-          return undefined; // simulate Esc
-        },
         custom: async (factory) => {
           detailComponent = factory({ terminal, requestRender() {} }, createThemeStub(), {}, () => { detailClosed = true; });
         },
@@ -181,7 +174,6 @@ export async function createExtensionTestHarness(options = {}) {
         return null;
       },
       getWidgetOptions: () => widgetOptions,
-      getSelectState: () => ({ selectedTitle, selectedOptions }),
       getDetails: () => ({ component: detailComponent, closed: detailClosed, terminal }),
     };
   }

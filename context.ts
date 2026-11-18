@@ -11,8 +11,8 @@ export const TODO_CONTEXT_TYPE = "pi-todo-context" as const;
  * Never includes volatile timestamps or ephemeral metadata.
  */
 export function formatTodoContextContent(items: readonly TodoItem[]): string {
-  const unfinished = items.filter((item: TodoItem) => item.status !== "completed" && item.status !== "cancelled");
-  if (unfinished.length === 0) {
+  const hasOpenWork = items.some((item: TodoItem) => item.status !== "completed" && item.status !== "cancelled");
+  if (!hasOpenWork) {
     return JSON.stringify({ todos: [] });
   }
   return JSON.stringify({

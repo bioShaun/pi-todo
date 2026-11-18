@@ -111,10 +111,11 @@ function handleSet(stateManager: TodoStateManager, params: TodoParams): TodoExec
     return makeError(stateManager.getItems(), "Items array is required for 'set' action");
   }
   const res = stateManager.set(params.items);
+  const items = stateManager.getItems();
   if (!res.success) {
-    return makeError(stateManager.getItems(), res.error || "Failed to set todos", res.errors);
+    return makeError(items, res.error || "Failed to set todos", res.errors);
   }
-  return makeSuccess(stateManager.getItems(), formatToolSummary(stateManager.getItems()));
+  return makeSuccess(items, formatToolSummary(items));
 }
 
 function handleUpdate(stateManager: TodoStateManager, params: TodoParams): TodoExecutionResult {
@@ -122,10 +123,11 @@ function handleUpdate(stateManager: TodoStateManager, params: TodoParams): TodoE
     return makeError(stateManager.getItems(), "Updates array cannot be empty for 'update' action");
   }
   const res = stateManager.update(params.updates);
+  const items = stateManager.getItems();
   if (!res.success) {
-    return makeError(stateManager.getItems(), res.error || "Failed to update todos", res.errors);
+    return makeError(items, res.error || "Failed to update todos", res.errors);
   }
-  return makeSuccess(stateManager.getItems(), formatToolSummary(stateManager.getItems()));
+  return makeSuccess(items, formatToolSummary(items));
 }
 
 function handleClear(stateManager: TodoStateManager): TodoExecutionResult {
@@ -238,9 +240,11 @@ export default function todoExtension(pi: ExtensionAPI): void {
         case "update":
           result = handleUpdate(stateManager, params);
           break;
-        case "list":
-          result = makeSuccess(stateManager.getItems(), formatToolSummary(stateManager.getItems()));
+        case "list": {
+          const items = stateManager.getItems();
+          result = makeSuccess(items, formatToolSummary(items));
           break;
+        }
         case "clear":
           result = handleClear(stateManager);
           break;
@@ -258,14 +262,18 @@ export default function todoExtension(pi: ExtensionAPI): void {
           const newItems = stateManager.getItems();
           if (!areTodoItemsEqual(prevItems, newItems)) {
             const targetContent = formatTodoContextContent(newItems);
-            pi.sendMessage(
-              {
-                customType: TODO_CONTEXT_TYPE,
-                content: targetContent,
-                display: false,
-              },
-              { triggerTurn: false }
-            );
+            const redundantClear =
+              params.action === "clear" && formatTodoContextContent(prevItems) === targetContent;
+            if (!redundantClear) {
+              pi.sendMessage(
+                {
+                  customType: TODO_CONTEXT_TYPE,
+                  content: targetContent,
+                  display: false,
+                },
+                { triggerTurn: false }
+              );
+            }
           }
         }
       }

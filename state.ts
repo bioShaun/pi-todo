@@ -35,8 +35,14 @@ export interface TodoMutationResult {
   errors?: string[];
 }
 
-function clone<T>(val: T): T {
-  return JSON.parse(JSON.stringify(val));
+function cloneItems(items: readonly TodoItem[]): TodoItem[] {
+  return items.map((item) => ({ ...item }));
+}
+
+function formatValidationError(errors: string[]): string {
+  return errors.length === 1
+    ? errors[0]
+    : `Validation failed with ${errors.length} errors: ${errors.join("; ")}`;
 }
 
 /** Checks whether two todo item lists are identical in IDs, text, status, and reason. */
@@ -62,9 +68,7 @@ export function areTodoItemsEqual(a: readonly TodoItem[], b: readonly TodoItem[]
 function failure(errors: string[]): TodoMutationResult {
   return {
     success: false,
-    error: errors.length === 1
-      ? errors[0]
-      : `Validation failed with ${errors.length} errors: ${errors.join("; ")}`,
+    error: formatValidationError(errors),
     errors,
   };
 }
@@ -127,12 +131,11 @@ export function validateSnapshotItems(
   }
 
   const result: TodoItem[] = [];
-  const seenIds = new Set<number>();
   const errors: string[] = [];
 
   for (let i = 0; i < items.length; i++) {
     const raw = items[i];
-    if (!raw || typeof raw !== "object") {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
       errors.push(`Item at index ${i} is malformed`);
       continue;
     }
@@ -146,11 +149,6 @@ export function validateSnapshotItems(
     if (typeof rawId === "number" && Number.isInteger(rawId) && rawId === i + 1) {
       id = rawId;
       label = `Item ${rawId}`;
-      if (seenIds.has(rawId)) {
-        errors.push(`Duplicate item id ${rawId}`);
-      } else {
-        seenIds.add(rawId);
-      }
     } else {
       errors.push(`Item at index ${i} must have sequential id ${i + 1}`);
     }
@@ -200,9 +198,7 @@ export function validateSnapshotItems(
   if (errors.length > 0) {
     return {
       valid: false,
-      error: errors.length === 1
-        ? errors[0]
-        : `Validation failed with ${errors.length} errors: ${errors.join("; ")}`,
+      error: formatValidationError(errors),
       errors,
     };
   }
@@ -219,7 +215,7 @@ export class TodoStateManager {
   }
 
   public getItems(): TodoItem[] {
-    return clone(this.items);
+    return cloneItems(this.items);
   }
 
   private commitState(candidate: TodoItem[]): TodoMutationResult {
@@ -229,7 +225,7 @@ export class TodoStateManager {
 
     const snapshot: TodoStateSnapshot = {
       version: 1,
-      items: clone(candidate),
+      items: cloneItems(candidate),
     };
 
     if (this.appendEntryFn) {
@@ -263,7 +259,7 @@ export class TodoStateManager {
     for (let i = 0; i < rawItems.length; i++) {
       const raw = rawItems[i];
       const label = `Item ${i + 1}`;
-      if (!raw || typeof raw !== "object") {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
         errors.push(`Item at index ${i} is malformed`);
         continue;
       }
@@ -315,28 +311,22 @@ export class TodoStateManager {
       return failure(["Updates array cannot be empty"]);
     }
 
-    const envelopeErrors: string[] = [];
+    const candidate = cloneItems(this.items);
+    const errors: string[] = [];
     const seenIds = new Set<number>();
+
     for (let i = 0; i < updates.length; i++) {
       const u = updates[i];
-      if (!u || typeof u !== "object" || typeof u.id !== "number" || !Number.isInteger(u.id) || u.id <= 0) {
-        envelopeErrors.push(`Update at index ${i} must include a positive integer id`);
+      if (!u || typeof u !== "object" || Array.isArray(u) || typeof u.id !== "number" || !Number.isInteger(u.id) || u.id <= 0) {
+        errors.push(`Update at index ${i} must include a positive integer id`);
         continue;
       }
       if (seenIds.has(u.id)) {
-        envelopeErrors.push(`Duplicate update for task id ${u.id}`);
-      } else {
-        seenIds.add(u.id);
+        errors.push(`Duplicate update for task id ${u.id}`);
+        continue;
       }
-    }
-    if (envelopeErrors.length > 0) {
-      return failure(envelopeErrors);
-    }
+      seenIds.add(u.id);
 
-    const candidate = clone(this.items);
-    const errors: string[] = [];
-
-    for (const u of updates) {
       const idx = candidate.findIndex((item) => item.id === u.id);
       if (idx === -1) {
         errors.push(`Unknown task id ${u.id}`);
@@ -433,7 +423,7 @@ export class TodoStateManager {
       return false;
     }
 
-    this.items = clone(validation.items);
+    this.items = validation.items;
     return true;
   }
 }

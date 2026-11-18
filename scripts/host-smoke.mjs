@@ -17,7 +17,9 @@ const { convertResponsesMessages } = await import(
 );
 
 const cwd = process.cwd();
-const work = fs.mkdtempSync(path.join(cwd, ".work/host-smoke-"));
+const workRoot = path.join(cwd, ".work");
+fs.mkdirSync(workRoot, { recursive: true });
+const work = fs.mkdtempSync(path.join(workRoot, "host-smoke-"));
 const agentDir = path.join(work, "agent");
 fs.mkdirSync(agentDir);
 const errors = [];
